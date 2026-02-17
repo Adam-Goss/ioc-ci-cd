@@ -27,14 +27,4 @@ cdncheck.it.com
 61.4.102.97
 59.110.7.32
 95.179.213.0/update/AutoUpdater.exe
-95.179.213.0/update/Upgrade.exe
-45.32.144.255/update/update.exe
-45.76.155.202/update/update.exe
-59.110.7.32/dpixel
-self-dns.it.com/help/Get-Start
-self-dns.it.com/resolve
-self-dns.it.com/dns-query
-safe-dns.it.com/help/Get-Start
-safe-dns.it.com/resolve
-safe-dns.it.com/dns-query
-bad.com
+
