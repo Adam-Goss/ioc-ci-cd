@@ -84,3 +84,5 @@ Last Updated: 2026-02-17
 - [x] Per-publisher configurable confidence levels: MISP defaults to medium+, OpenCTI defaults to high only
 - [x] Deploy reads pending IOCs from master CSV, filters per-publisher, publishes, marks as deployed
 - [x] indicators.txt cleared after deploy (unchanged behavior)
+- [x] Validate pipeline no longer fails on malformed or below-threshold IOCs (warns instead)
+- [x] Deploy pipeline no longer fails on publisher errors (warnings embedded in commit message)

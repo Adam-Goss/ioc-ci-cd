@@ -2,6 +2,32 @@
 
 All notable changes to the IOC CI/CD Pipeline project will be documented in this file.
 
+## [0.2.0] - 2026-02-17
+
+### Changed
+- **Two-phase deployment**: Deploy workflow split into Inventory (enrich + write to CSV) and Deploy (publish from CSV)
+- **Per-publisher confidence filtering**: Each publisher independently filters by configurable confidence level
+  - MISP: defaults to `medium` (deploys medium + high IOCs)
+  - OpenCTI: defaults to `high` (deploys only high confidence IOCs)
+  - Configurable via `MISP_MIN_CONFIDENCE_LEVEL` and `OPENCTI_MIN_CONFIDENCE_LEVEL` env vars
+- **Non-fatal validation**: PR validation no longer fails on malformed or below-threshold IOCs (warnings instead)
+- **Non-fatal deployment**: Publisher failures no longer stop the pipeline; warnings embedded in commit message
+- **Master CSV format**: Added `confidence_level` and `status` columns
+  - `confidence_level`: low (<30), medium (30-69), high (70+)
+  - `status`: pending (after inventory) → deployed (after publish)
+- CLI now supports three commands: `validate`, `inventory`, `publish`
+
+### Added
+- `ConfidenceLevel` enum in `models.py` with `get_confidence_level()` helper
+- Per-publisher confidence level configuration in `config.py`
+- `inventory` CLI command (Phase 1 of deploy)
+- `publish` CLI command reads pending IOCs from master CSV (Phase 2 of deploy)
+- `deploy_warnings.txt` mechanism for communicating publisher failures to git commit step
+- New helper functions: `read_pending_iocs_from_csv()`, `update_csv_deployment_status()`, `filter_by_publisher_confidence()`
+- Tests for confidence levels, config validation, inventory/publish commands, and partial failure scenarios
+
+---
+
 ## [0.1.0] - 2026-02-17
 
 ### Added

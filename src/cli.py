@@ -150,7 +150,7 @@ def append_to_master_inventory(
 
     # Append new IOCs
     new_count = 0
-    needs_header = not csv_path.exists() or csv_path.stat().st_size == 0 or not existing_iocs
+    needs_header = not csv_path.exists() or csv_path.stat().st_size == 0
 
     with csv_path.open("a", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)

@@ -44,17 +44,19 @@ Automate the ingestion, validation, enrichment, and deployment of Indicators of 
 - **FR-3.3**: Parse and validate IOC format
 - **FR-3.4**: Enrich new IOCs against TI sources
 - **FR-3.5**: Post enrichment report as PR comment (idempotent updates)
-- **FR-3.6**: Fail check if IOCs are malformed
-- **FR-3.7**: Fail check if IOCs below threshold (unless override set)
+- **FR-3.6**: Warn (not fail) if IOCs are malformed — reported in PR comment
+- **FR-3.7**: Warn (not fail) if IOCs below threshold — still recorded in master CSV
 
-#### FR-4: Deployment Workflow
+#### FR-4: Deployment Workflow (Two-Phase)
 - **FR-4.1**: Trigger on push to main when `iocs/indicators.txt` changes
 - **FR-4.2**: Diff against previous commit to find new IOCs
-- **FR-4.3**: Re-enrich IOCs (fresh data, not stale from PR)
-- **FR-4.4**: Filter to IOCs above confidence threshold
-- **FR-4.5**: Create MISP event with IOCs as attributes
-- **FR-4.6**: Create OpenCTI observables and promote to indicators
+- **FR-4.3**: Phase 1 (Inventory): Enrich IOCs, append ALL valid IOCs to master CSV with `status=pending` and confidence level
+- **FR-4.4**: Phase 2 (Deploy): Read pending IOCs from master CSV, filter independently per publisher by configurable confidence level
+- **FR-4.5**: Create MISP event with IOCs meeting MISP confidence level (default: medium+)
+- **FR-4.6**: Create OpenCTI observables for IOCs meeting OpenCTI confidence level (default: high only)
 - **FR-4.7**: Use GitHub Environment for deployment gate
+- **FR-4.8**: Publisher failures are non-fatal — pipeline continues, warnings embedded in commit message
+- **FR-4.9**: Clear `indicators.txt` and commit updated master CSV after processing
 
 #### FR-5: MISP Integration
 - **FR-5.1**: Create one MISP event per pipeline run
@@ -81,7 +83,7 @@ Automate the ingestion, validation, enrichment, and deployment of Indicators of 
 #### NFR-2: Reliability
 - **NFR-2.1**: TI source failures are non-fatal (mark unavailable, continue)
 - **NFR-2.2**: Retry on transient errors (3 attempts, exponential backoff)
-- **NFR-2.3**: Publisher failures are fatal (stop deployment)
+- **NFR-2.3**: Publisher failures are non-fatal (pipeline continues, warning in commit message)
 
 #### NFR-3: Security
 - **NFR-3.1**: API keys stored as GitHub secrets
@@ -157,21 +159,28 @@ Automate the ingestion, validation, enrichment, and deployment of Indicators of 
 6. Aggregator computes weighted confidence score
 7. PR comment formatter generates Markdown report
 8. GitHub Actions posts comment (idempotent update)
-9. Check fails if malformed or below threshold
+9. Warnings issued for malformed or below-threshold IOCs (pipeline does not fail)
 
-#### Deployment Workflow
+#### Deployment Workflow (Two-Phase)
 1. PR merged → `deploy.yml` triggered
 2. Git diff extracts newly merged lines
-3. Parser + enrichment (same as validation)
-4. Filter results to confidence >= threshold
-5. MISP publisher creates event + attributes
-6. OpenCTI publisher creates observables + indicators
-7. Workflow completes, artifacts logged
+3. **Phase 1 — Inventory**: Parse, enrich, append all valid IOCs to master CSV as `pending`
+4. **Phase 2 — Deploy**: Read pending IOCs from CSV, filter per-publisher by confidence level
+5. MISP publisher creates event for IOCs meeting minimum level (default: medium+)
+6. OpenCTI publisher creates observables for IOCs meeting minimum level (default: high only)
+7. Publisher failures are caught — pipeline continues with remaining publishers
+8. Master CSV updated: `status=deployed`, `deployed_to` records which platforms succeeded
+9. `indicators.txt` cleared, changes committed with `[skip ci]`
+10. If any publisher failed, warning embedded in commit message
 
 ### Data Models
 
 ```python
 IOCType = Enum("IP", "DOMAIN", "HASH_MD5", "HASH_SHA1", "HASH_SHA256", "URL")
+
+ConfidenceLevel = Enum("LOW", "MEDIUM", "HIGH")
+  - LOW: 0-29, MEDIUM: 30-69, HIGH: 70-100
+  - get_confidence_level(score) -> ConfidenceLevel
 
 IOC:
   - ioc_type: IOCType
@@ -236,7 +245,9 @@ All configuration via environment variables:
 | `MISP_API_KEY` | Deploy only | - | MISP auth key |
 | `OPENCTI_URL` | Deploy only | - | OpenCTI URL |
 | `OPENCTI_TOKEN` | Deploy only | - | OpenCTI token |
-| `CONFIDENCE_THRESHOLD` | No | 70 | Min confidence (0-100) |
+| `CONFIDENCE_THRESHOLD` | No | 70 | Min confidence for PR validation (0-100) |
+| `MISP_MIN_CONFIDENCE_LEVEL` | No | medium | Min confidence level for MISP deployment (low/medium/high) |
+| `OPENCTI_MIN_CONFIDENCE_LEVEL` | No | high | Min confidence level for OpenCTI deployment (low/medium/high) |
 | `MISP_VERIFY_SSL` | No | true | Verify MISP TLS cert |
 | `WEIGHT_VT` | No | 0.45 | VirusTotal weight |
 | `WEIGHT_ABUSEIPDB` | No | 0.25 | AbuseIPDB weight |

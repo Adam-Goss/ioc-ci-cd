@@ -18,8 +18,8 @@ This GitHub Action automates the ingestion, validation, enrichment, and deployme
 - **Auto-detection** of IOC types (IPv4, Domain, URL, MD5, SHA1, SHA256)
 - **Multi-source enrichment** via VirusTotal, AbuseIPDB, and OTX AlienVault
 - **PR-based review gate** with automated enrichment reports posted as comments
-- **Configurable confidence thresholds** with override capability
-- **Automated deployment** to MISP and OpenCTI on merge to main
+- **Configurable confidence thresholds** with per-publisher confidence levels
+- **Two-phase deployment** to MISP and OpenCTI on merge to main (inventory → deploy)
 - **Async concurrent enrichment** for high performance
 - **Rate limiting** and error handling for TI APIs
 
@@ -79,8 +79,8 @@ This GitHub Action automates the ingestion, validation, enrichment, and deployme
 5. **Review the enrichment report** posted as a PR comment
 
 6. **Merge the PR** to automatically:
-   - Deploy IOCs to MISP and OpenCTI
-   - Append IOCs to `iocs/master-indicators.csv` (master inventory)
+   - **Phase 1**: Enrich IOCs and append to `iocs/master-indicators.csv` with confidence levels
+   - **Phase 2**: Deploy IOCs to MISP (medium+) and OpenCTI (high only) based on configurable confidence levels
    - Clear `iocs/indicators.txt` for the next batch
 
 ## 📊 Master IOC Inventory
@@ -90,22 +90,25 @@ The pipeline maintains a **master inventory** at `iocs/master-indicators.csv` co
 - **IOC Type** (ip, domain, url, hash_md5, hash_sha1, hash_sha256)
 - **IOC Value** (the actual indicator)
 - **Confidence Score** (0-100 from enrichment)
-- **Deployed To** (MISP,OpenCTI or N/A if below threshold)
+- **Confidence Level** (low, medium, high)
+- **Status** (pending or deployed)
+- **Deployed To** (MISP, OpenCTI, MISP,OpenCTI, or N/A)
 - **Added Date** (timestamp)
 - **Commit SHA** (GitHub commit that added it)
 
 **Example CSV**:
 ```csv
-ioc_type,ioc_value,confidence_score,deployed_to,added_date,commit_sha
-domain,evil.com,85.23,MISP,OpenCTI,2026-02-17 14:30:00,abc12345
-ip,192.0.2.1,45.67,N/A,2026-02-17 14:30:00,abc12345
+ioc_type,ioc_value,confidence_score,confidence_level,status,deployed_to,added_date,commit_sha
+domain,evil.com,85.23,high,deployed,MISP,OpenCTI,2026-02-17 14:30:00,abc12345
+ip,192.0.2.1,45.67,medium,deployed,MISP,2026-02-17 14:30:00,abc12345
+ip,10.0.0.1,15.00,low,deployed,N/A,2026-02-17 14:30:00,abc12345
 ```
 
 This provides:
-- ✅ **Audit trail** of all IOCs processed
-- ✅ **Deduplication** across batches
-- ✅ **Historical record** of deployment decisions
-- ✅ **Easy export** for analysis or reporting
+- **Audit trail** of all IOCs processed with confidence levels
+- **Deployment tracking** via status (pending → deployed) and deployed_to
+- **Deduplication** across batches
+- **Easy export** for analysis or reporting
 
 ---
 
@@ -156,7 +159,7 @@ d41d8cd98f00b204e9800998ecf8427e
 3. Enriches each IOC against VirusTotal, AbuseIPDB, and OTX concurrently
 4. Computes a weighted confidence score (VT: 0.45, AIB: 0.25, OTX: 0.30)
 5. Posts an enrichment report as a PR comment (updates on each push)
-6. **Fails** if IOCs are malformed or below the confidence threshold (configurable)
+6. **Warns** (does not fail) if IOCs are malformed or below threshold — reported in PR comment
 
 **Example PR Comment**:
 
@@ -184,15 +187,25 @@ d41d8cd98f00b204e9800998ecf8427e
 
 **Trigger**: Push to `main` when `iocs/indicators.txt` changes
 
-**Actions**:
+**Two-phase process**:
+
+**Phase 1 — Inventory**:
 1. Diffs against the previous commit to find newly merged IOCs
-2. Re-enriches IOCs (fresh scores, PR validation may be stale)
-3. Filters to IOCs above the confidence threshold
-4. Creates a MISP event with all passing IOCs as attributes
-5. Creates OpenCTI observables and promotes them to indicators
-6. **Appends all IOCs** (passed and failed) to `iocs/master-indicators.csv`
-7. **Clears `iocs/indicators.txt`** for the next batch
-8. **Commits changes** back to the repo with `[skip ci]`
+2. Enriches IOCs (fresh scores from all TI sources)
+3. Appends ALL valid IOCs to `iocs/master-indicators.csv` with confidence level and `status=pending`
+
+**Phase 2 — Deploy**:
+4. Reads pending IOCs from master CSV
+5. Filters independently per publisher by configurable confidence level:
+   - **MISP**: medium+ by default (configurable via `MISP_MIN_CONFIDENCE_LEVEL`)
+   - **OpenCTI**: high only by default (configurable via `OPENCTI_MIN_CONFIDENCE_LEVEL`)
+6. Publishes to each platform (failures are non-fatal — pipeline continues)
+7. Updates master CSV with deployment status (`deployed_to`, `status=deployed`)
+
+**Cleanup**:
+8. **Clears `iocs/indicators.txt`** for the next batch
+9. **Commits changes** back to the repo with `[skip ci]`
+10. If any publisher failed, warning is embedded in the commit message
 
 **Environment**: Uses the `production` GitHub Environment (can add required reviewers)
 
@@ -216,7 +229,9 @@ d41d8cd98f00b204e9800998ecf8427e
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CONFIDENCE_THRESHOLD` | `70` | Minimum confidence score (0-100) |
+| `CONFIDENCE_THRESHOLD` | `70` | Minimum confidence score for PR validation warnings (0-100) |
+| `MISP_MIN_CONFIDENCE_LEVEL` | `medium` | Minimum confidence level for MISP deployment (`low`/`medium`/`high`) |
+| `OPENCTI_MIN_CONFIDENCE_LEVEL` | `high` | Minimum confidence level for OpenCTI deployment (`low`/`medium`/`high`) |
 | `MISP_VERIFY_SSL` | `true` | Verify MISP TLS certificate |
 | `MISP_DISTRIBUTION` | `0` | MISP event distribution (0=org, 1=community, 2=connected, 3=all) |
 | `MISP_AUTO_PUBLISH` | `false` | Auto-publish MISP events |
@@ -251,10 +266,16 @@ export VT_API_KEY="your-key"
 export ABUSEIPDB_API_KEY="your-key"
 export OTX_API_KEY="your-key"
 
-# Validate IOCs
+# Validate IOCs (PR workflow)
 python -m src.cli validate iocs/indicators.txt --threshold=70
 
-# The report will be written to /tmp/enrichment_report.md
+# Inventory IOCs (Phase 1 of deploy)
+python -m src.cli inventory iocs/indicators.txt
+
+# Publish pending IOCs (Phase 2 of deploy)
+export MISP_URL="https://..." MISP_API_KEY="..."
+export OPENCTI_URL="https://..." OPENCTI_TOKEN="..."
+python -m src.cli publish
 ```
 
 ### Run Tests

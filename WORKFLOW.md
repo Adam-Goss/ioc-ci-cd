@@ -63,9 +63,9 @@ This document describes the complete workflow from IOC submission to deployment 
 8. Report posted as PR comment
    └─> Updates on each push (idempotent)
 
-9. Check fails if:
-   └─> Any IOCs are malformed
-   └─> IOCs below threshold (unless override=true)
+9. Warnings issued if:
+   └─> Any IOCs are malformed (reported in PR comment, pipeline continues)
+   └─> IOCs below threshold (still recorded, pipeline continues)
 
 10. Analyst reviews report
     └─> Investigates low-confidence IOCs
@@ -80,17 +80,39 @@ This document describes the complete workflow from IOC submission to deployment 
 │                    (.github/workflows/deploy.yml)                        │
 └─────────────────────────────────────────────────────────────────────────┘
 
+              PHASE 1 — INVENTORY
+
 12. Git diff extracts newly merged IOCs
     └─> Only lines added by this merge commit
 
-13. Re-enrichment runs
-    └─> Fresh scores (PR validation may be hours/days old)
-    └─> Same 3 TI sources queried again
+13. Enrichment runs
+    └─> Fresh scores from all 3 TI sources
+    └─> Malformed IOCs skipped (warned, not fatal)
 
-14. Filter to above threshold
-    └─> Only IOCs >= confidence_threshold are deployed
+14. ALL valid IOCs appended to master CSV as "pending"
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │  iocs/master-indicators.csv                                            │
+    ├───────────────────────────────────────────────────────────────────────┤
+    │  ioc_type,ioc_value,confidence_score,confidence_level,status,          │
+    │  deployed_to,added_date,commit_sha                                     │
+    │  domain,evil.com,85.23,high,pending,N/A,2026-02-17 14:30:00,abc12345  │
+    │  ip,192.0.2.1,45.67,medium,pending,N/A,2026-02-17 14:30:00,abc12345   │
+    │  ip,10.0.0.1,15.00,low,pending,N/A,2026-02-17 14:30:00,abc12345       │
+    └───────────────────────────────────────────────────────────────────────┘
+    └─> ALL valid IOCs appended (low, medium, and high)
+    └─> Deduplication prevents re-adding existing IOCs
+    └─> Confidence level computed: LOW (<30), MEDIUM (30-69), HIGH (70+)
+    └─> deployed_to = "N/A" initially, status = "pending"
 
-15. MISP publisher creates event
+              PHASE 2 — DEPLOY
+
+15. Per-publisher confidence filtering
+    └─> Each publisher independently filters by configurable min level
+    └─> MISP: deploys medium + high IOCs (default)
+    └─> OpenCTI: deploys only high IOCs (default)
+    └─> Configurable via MISP_MIN_CONFIDENCE_LEVEL / OPENCTI_MIN_CONFIDENCE_LEVEL
+
+16. MISP publisher creates event (if IOCs meet level)
     ┌─────────────────────────────────┐
     │  MISP Event                      │
     ├─────────────────────────────────┤
@@ -106,8 +128,9 @@ This document describes the complete workflow from IOC submission to deployment 
     │  - sha256: e3b0c442...          │
     │  Each tagged with confidence    │
     └─────────────────────────────────┘
+    └─> Failure is non-fatal: pipeline continues
 
-16. OpenCTI publisher creates observables
+17. OpenCTI publisher creates observables (if IOCs meet level)
     ┌─────────────────────────────────┐
     │  For each IOC:                   │
     │  1. Create STIX Observable (SCO) │
@@ -115,22 +138,13 @@ This document describes the complete workflow from IOC submission to deployment 
     │  3. Promote to Indicator         │
     │  4. Add labels from enrichment   │
     └─────────────────────────────────┘
+    └─> Failure is non-fatal: pipeline continues
 
-17. Master inventory updated
-    ┌─────────────────────────────────────────────────────────────┐
-    │  iocs/master-indicators.csv                                  │
-    ├─────────────────────────────────────────────────────────────┤
-    │  ioc_type,ioc_value,confidence_score,deployed_to,added_date, │
-    │  commit_sha                                                  │
-    │  domain,evil.com,85.23,MISP,OpenCTI,2026-02-17,abc12345     │
-    │  ip,192.0.2.1,45.67,N/A,2026-02-17,abc12345                 │
-    │  url,http://malware.site/...,92.10,MISP,OpenCTI,2026-02-... │
-    └─────────────────────────────────────────────────────────────┘
-    └─> ALL IOCs appended (passed and failed)
-    └─> Deduplication prevents re-adding existing IOCs
-    └─> deployed_to = "MISP,OpenCTI" or "N/A"
+18. Master CSV updated with deployment status
+    └─> status: "pending" → "deployed"
+    └─> deployed_to: "MISP", "OpenCTI", "MISP,OpenCTI", or "N/A" (if no publisher succeeded)
 
-18. indicators.txt cleared
+19. indicators.txt cleared
     ┌─────────────────────────────────┐
     │  iocs/indicators.txt             │
     ├─────────────────────────────────┤
@@ -140,18 +154,21 @@ This document describes the complete workflow from IOC submission to deployment 
     │  (empty - ready for next batch)  │
     └─────────────────────────────────┘
 
-19. Changes committed back to repo
+20. Changes committed back to repo
     └─> Commit message: "chore: clear indicators.txt and update master inventory [skip ci]"
+    └─> If publisher failed: warning appended to commit message
     └─> [skip ci] prevents recursive workflow trigger
     └─> Bot user: github-actions[bot]
 
-20. Deployment summary logged
+21. Deployment summary logged
     ┌─────────────────────────────────┐
     │  ✅ Deployment complete          │
     │  IOCs processed: 15              │
-    │  IOCs deployed: 12               │
     │  Master inventory updated        │
     │  indicators.txt cleared          │
+    │  ⚠️  (if applicable)             │
+    │  MISP: failed                    │
+    │  See commit message for details  │
     └─────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -160,10 +177,10 @@ This document describes the complete workflow from IOC submission to deployment 
 
 Final repository state:
   - indicators.txt: Empty (ready for next batch)
-  - master-indicators.csv: Updated with new IOCs + metadata
-  - MISP: Event created with all passed IOCs as attributes
-  - OpenCTI: Observables/indicators created for all passed IOCs
-  - Git history: Commit with [skip ci] showing cleanup
+  - master-indicators.csv: Updated with new IOCs (status=deployed, deployed_to filled)
+  - MISP: Event created with IOCs meeting MISP confidence level
+  - OpenCTI: Observables/indicators created for IOCs meeting OpenCTI confidence level
+  - Git history: Commit with [skip ci] (includes warning if any publisher failed)
 ```
 
 ---
@@ -182,12 +199,14 @@ Final repository state:
 ### `iocs/master-indicators.csv` (Permanent Inventory)
 - **Purpose**: Permanent audit trail of all processed IOCs
 - **Lifecycle**: Append-only (never cleared)
-- **Updated**: After every deployment
+- **Updated**: Phase 1 adds rows as `pending`, Phase 2 marks them `deployed`
 - **Deduplication**: Prevents re-adding IOCs already in inventory
 - **Format**: CSV with headers
   ```
-  ioc_type,ioc_value,confidence_score,deployed_to,added_date,commit_sha
+  ioc_type,ioc_value,confidence_score,confidence_level,status,deployed_to,added_date,commit_sha
   ```
+- **Status lifecycle**: `pending` (after inventory) → `deployed` (after publish)
+- **Confidence levels**: low (<30), medium (30-69), high (70+)
 
 ---
 
@@ -218,16 +237,22 @@ Final repository state:
 
 ## 🎛️ Configuration Options
 
-### Confidence Threshold
+### Confidence Threshold (PR Validation)
 - **Variable**: `CONFIDENCE_THRESHOLD`
 - **Default**: 70
 - **Range**: 0-100
-- **Effect**: IOCs below this score are not deployed (but still recorded in CSV)
+- **Effect**: IOCs below this score are warned about in PR comment (but not blocked)
+
+### Per-Publisher Confidence Levels (Deployment)
+- **`MISP_MIN_CONFIDENCE_LEVEL`**: Default `medium` — deploys medium + high IOCs to MISP
+- **`OPENCTI_MIN_CONFIDENCE_LEVEL`**: Default `high` — deploys only high confidence IOCs to OpenCTI
+- **Valid values**: `low`, `medium`, `high`
+- **Levels**: LOW (0-29), MEDIUM (30-69), HIGH (70-100)
 
 ### Override Threshold
 - **Input**: `override_threshold` (PR workflow_dispatch only)
 - **Default**: false
-- **Effect**: When true, allows below-threshold IOCs to pass validation
+- **Effect**: When true, suppresses below-threshold warnings
 
 ### Publisher Options
 - `MISP_DISTRIBUTION` - Event sharing level (0-3)
@@ -258,14 +283,15 @@ Final repository state:
 ## ⚠️ Error Handling
 
 ### Validation (PR)
-- **Malformed IOCs**: Check fails, must be fixed
+- **Malformed IOCs**: Warning issued, reported in PR comment (pipeline does not fail)
 - **TI source failure**: Non-fatal, source marked unavailable
-- **Below threshold**: Check fails unless override=true
+- **Below threshold**: Warning issued, IOCs still recorded (pipeline does not fail)
 
 ### Deployment (Merge)
-- **MISP failure**: Fatal, exit code 3, deployment stops
-- **OpenCTI failure**: Fatal, exit code 4, deployment stops
-- **Publisher errors**: Logged, but CSV still updated
+- **MISP failure**: Non-fatal, warning logged, pipeline continues with OpenCTI
+- **OpenCTI failure**: Non-fatal, warning logged, pipeline continues
+- **Both publishers fail**: Warning embedded in commit message, IOCs remain as `pending` in CSV
+- **Publisher errors**: Logged via `::warning::` annotations, captured in `deploy_warnings.txt` (transient file, not committed)
 
 ### Automatic Recovery
 - **Re-enrichment on deploy**: Avoids stale data
