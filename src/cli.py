@@ -82,16 +82,16 @@ async def validate_command(args: argparse.Namespace) -> int:
 
     # Format and write report
     markdown = format_report(report)
-    write_report(markdown, "/tmp/enrichment_report.md")
-    logger.info("Report written to /tmp/enrichment_report.md")
+    report_dir = os.environ.get("GITHUB_WORKSPACE", "/tmp")
+    report_path = os.path.join(report_dir, "enrichment_report.md")
+    write_report(markdown, report_path)
+    logger.info(f"Report written to {report_path}")
 
-    # Set GitHub Actions outputs
+    # Set GitHub Actions outputs (workflow steps use these to fail the check)
     set_github_outputs(report)
 
-    # Determine exit code
     if malformed_lines:
-        logger.error(f"Validation failed: {len(malformed_lines)} malformed IOCs")
-        return 1
+        logger.warning(f"{len(malformed_lines)} malformed IOCs detected (see report)")
 
     logger.info("Validation complete")
     return 0

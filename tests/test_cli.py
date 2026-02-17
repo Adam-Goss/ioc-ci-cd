@@ -257,7 +257,7 @@ class TestValidateCommand:
 
     @pytest.mark.asyncio
     async def test_validate_with_malformed_iocs(self, tmp_path):
-        """Test validation with malformed IOCs returns exit code 1."""
+        """Test validation with malformed IOCs returns exit code 0 (outputs drive failure)."""
         # Create file with invalid IOC
         ioc_file = tmp_path / "bad_iocs.txt"
         ioc_file.write_text("999.999.999.999\n")
@@ -279,8 +279,8 @@ class TestValidateCommand:
 
             exit_code = await validate_command(args)
 
-            # Should fail with exit code 1 due to malformed IOCs
-            assert exit_code == 1
+            # Should return 0; workflow uses outputs to fail the check
+            assert exit_code == 0
 
     @pytest.mark.asyncio
     async def test_validate_no_enrichment_when_no_valid_iocs(self, tmp_path):
@@ -308,8 +308,8 @@ class TestValidateCommand:
             # Should NOT have called enrichment (no valid IOCs)
             mock_enrich.assert_not_called()
 
-            # Should still fail due to malformed IOCs
-            assert exit_code == 1
+            # Should return 0; workflow uses outputs to fail the check
+            assert exit_code == 0
 
 
 class TestPublishCommand:
