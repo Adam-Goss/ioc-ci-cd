@@ -329,11 +329,14 @@ async def inventory_command(args: argparse.Namespace) -> int:
         return 2
 
     if malformed_lines:
-        logger.error(f"Cannot inventory: {len(malformed_lines)} malformed IOCs")
-        return 1
+        logger.warning(
+            f"Skipping {len(malformed_lines)} malformed IOCs (not added to master inventory)"
+        )
 
     logger.info(
-        f"Parsed {len(valid_iocs)} valid IOCs, {duplicates_removed} duplicates removed"
+        f"Parsed {len(valid_iocs)} valid IOCs, "
+        f"{len(malformed_lines)} malformed, "
+        f"{duplicates_removed} duplicates removed"
     )
 
     if not valid_iocs:

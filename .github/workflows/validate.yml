@@ -101,19 +101,15 @@ jobs:
               console.log('Created new comment');
             }
 
-      - name: Fail if malformed IOCs detected
+      - name: Warn if malformed IOCs detected
         if: steps.enrich.outputs.has_malformed == 'true'
         run: |
-          echo "::error::Malformed IOCs detected. See the PR comment for details."
-          exit 1
+          echo "::warning::Malformed IOCs detected. See the PR comment for details. They will not be added to the master inventory."
 
-      - name: Fail if below-threshold IOCs without override
-        if: >
-          steps.enrich.outputs.has_below_threshold == 'true' &&
-          github.event.inputs.override_threshold != 'true'
+      - name: Warn if below-threshold IOCs detected
+        if: steps.enrich.outputs.has_below_threshold == 'true'
         run: |
-          echo "::error::IOCs below confidence threshold detected. Set override_threshold to true or raise scores."
-          exit 1
+          echo "::warning::IOCs below confidence threshold detected. They will still be added to the master inventory on merge."
 
   test:
     runs-on: ubuntu-latest
