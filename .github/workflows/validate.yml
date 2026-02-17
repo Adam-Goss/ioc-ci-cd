@@ -112,7 +112,6 @@ jobs:
           echo "::error::IOCs below confidence threshold detected. Set override_threshold to true or raise scores."
           exit 1
 
-  # Optional: Run unit tests on the Python codebase
   test:
     runs-on: ubuntu-latest
     steps:
@@ -121,6 +120,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
 
       - name: Install dependencies
         run: pip install -e ".[dev]"

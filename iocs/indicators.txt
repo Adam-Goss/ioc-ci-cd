@@ -37,3 +37,4 @@ self-dns.it.com/dns-query
 safe-dns.it.com/help/Get-Start
 safe-dns.it.com/resolve
 safe-dns.it.com/dns-query
+bad.com
