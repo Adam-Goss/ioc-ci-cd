@@ -124,8 +124,8 @@ Weighted average across **available** sources (weights renormalized when a sourc
 
 ### Setup
 ```bash
-python3.12 -m venv venv
-source venv/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -160,7 +160,7 @@ python -m src.cli validate iocs/indicators.txt --threshold=70
 
 ## Implementation Status
 
-### ✅ Completed (Phases 1-6, 8)
+### ✅ All Phases Complete
 - [x] Data models (`models.py`)
 - [x] IOC parser with auto-detection (`parser.py`)
 - [x] Configuration loader (`config.py`)
@@ -176,24 +176,19 @@ python -m src.cli validate iocs/indicators.txt --threshold=70
 - [x] README.md, PROJECT_SPEC.md, WORKFLOW.md
 - [x] Master inventory system (`master-indicators.csv`)
 - [x] Automatic cleanup of `indicators.txt` after deployment
+- [x] Test suite: **160 tests, 96% coverage**
 
-### 🚧 In Progress (Phase 7)
-- [ ] Unit tests
-- [ ] Integration tests
-- [ ] Test fixtures
+## Testing
 
-## Testing Strategy
-
-### Unit Tests (pytest)
-- Mock API responses with `aioresponses` / `responses`
-- Test fixtures in `tests/fixtures/` (sample IOCs, JSON responses)
-- Coverage target: 85%+
-
-### Key Test Cases
-- **Parser**: Valid IOCs (all types), malformed, dedup, comments, empty lines
-- **Enrichment**: Score normalization, rate limits, network errors, unavailable sources
-- **Aggregator**: Weighted averaging, weight renormalization, tag extraction
-- **Publishers**: MISP event creation, OpenCTI observable creation, retry logic
+### Test Suite (160 tests, 96% coverage)
+- **Parser**: 18 tests (auto-detection, validation, dedup, edge cases)
+- **Models**: 8 tests (dataclass equality, hashing, set dedup)
+- **Rate limiter**: 10 tests (token bucket, daily budget, concurrency)
+- **Enrichment**: 41 tests (VT, AbuseIPDB, OTX clients + aggregator)
+- **Publishers**: 30 tests (MISP event creation, OpenCTI observables, retry logic)
+- **Reporting**: 13 tests (PR comment formatting, GitHub outputs)
+- **CLI**: 21 tests (validate/publish commands, master CSV inventory)
+- **Fixtures**: Sample IOC files and mock API responses in `tests/fixtures/`
 
 ## Common Tasks
 

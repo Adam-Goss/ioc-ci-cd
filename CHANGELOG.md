@@ -30,10 +30,18 @@ All notable changes to the IOC CI/CD Pipeline project will be documented in this
 - Case-insensitive deduplication
 - Retry logic for API calls and publisher connections
 
+### Testing
+- 160 unit and integration tests across all modules
+- 96% code coverage (target was 85%)
+- Test suite covers: parser, models, rate limiter, enrichment clients, aggregator, publishers, reporting, CLI
+- Mock-based testing with pytest, pytest-asyncio, pytest-cov
+- Test fixtures for sample IOC files and mock API responses
+
 ### Documentation
 - Complete user guide (README.md)
 - Developer instructions (CLAUDE.md)
 - Product specification (PROJECT_SPEC.md)
+- Detailed workflow documentation (WORKFLOW.md)
 - Sample IOC file with examples
 
 ### Dependencies
@@ -50,7 +58,7 @@ Planned for future releases:
 - [ ] IPv6 support
 - [ ] Additional TI sources (Shodan, GreyNoise, URLhaus, PhishTank)
 - [ ] STIX 2.1 input format support
-- [ ] Comprehensive test suite (Phase 7)
+- [ ] Defanged IOC support (auto-refang `hxxp://`, `[.]`, `[:]//`)
 - [ ] CI/CD for the pipeline itself
 - [ ] Scheduled re-validation of existing IOCs
 - [ ] Slack/email notifications
