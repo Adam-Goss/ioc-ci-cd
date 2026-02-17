@@ -60,7 +60,7 @@ jobs:
         run: |
           # Clear the indicators.txt file
           cat > iocs/indicators.txt << 'EOF'
-          # IOC CI/CD Pipeline - Sample Indicators
+          # IOC CI/CD Pipeline - New Indicators
           #
           # Add your IOCs below (one per line, no type prefixes - auto-detected)
           # Supported types: IPv4, Domain, URL, MD5, SHA1, SHA256
@@ -69,7 +69,6 @@ jobs:
           # Empty lines are ignored
 
           # Add your IOCs here:
-
           EOF
 
           # Configure git

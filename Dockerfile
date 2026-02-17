@@ -2,18 +2,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copy and install dependencies
+# Copy project files and install dependencies
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir .
-
-# Copy source code
 COPY src/ ./src/
-
-# Copy IOC directory (may be empty initially)
-COPY iocs/ ./iocs/ 2>/dev/null || mkdir -p ./iocs/
+RUN pip install --no-cache-dir .
 
 # Set Python to run in unbuffered mode for better logging
 ENV PYTHONUNBUFFERED=1
 
-# Entrypoint
+# GitHub Actions mounts the workspace at /github/workspace
+# IOC files are accessed from there at runtime
+
 ENTRYPOINT ["python", "-m", "src.cli"]
