@@ -359,8 +359,12 @@ async def publish_command(args: argparse.Namespace) -> int:
     confidence levels, publishes to MISP and OpenCTI, and updates
     the CSV with deployment status.
 
+    Publisher failures are non-fatal: the pipeline continues, the CSV
+    is updated with whatever succeeded, and warnings are written to
+    a deploy_warnings.txt file for the workflow to pick up.
+
     Returns:
-        Exit code (0 = success, 3 = MISP error, 4 = OpenCTI error).
+        Exit code (0 = always succeeds).
     """
     logger.info("Publishing pending IOCs from master CSV")
 
@@ -380,6 +384,7 @@ async def publish_command(args: argparse.Namespace) -> int:
 
     # Track which IOCs were deployed to which platforms
     deployed_platforms: dict[str, set[str]] = {}  # ioc_value -> set of platform names
+    failed_platforms: list[str] = []
 
     # Publish to MISP
     misp_results = filter_by_publisher_confidence(
@@ -398,8 +403,8 @@ async def publish_command(args: argparse.Namespace) -> int:
             for r in misp_results:
                 deployed_platforms.setdefault(r.ioc.value, set()).add("MISP")
         except Exception as e:
-            logger.error(f"MISP publishing failed: {e}")
-            return 3
+            logger.warning(f"::warning::MISP publishing failed: {e}")
+            failed_platforms.append("MISP")
 
     # Publish to OpenCTI
     opencti_results = filter_by_publisher_confidence(
@@ -418,8 +423,8 @@ async def publish_command(args: argparse.Namespace) -> int:
             for r in opencti_results:
                 deployed_platforms.setdefault(r.ioc.value, set()).add("OpenCTI")
         except Exception as e:
-            logger.error(f"OpenCTI publishing failed: {e}")
-            return 4
+            logger.warning(f"::warning::OpenCTI publishing failed: {e}")
+            failed_platforms.append("OpenCTI")
 
     # Build CSV status updates
     deployment_updates: dict[int, str] = {}
@@ -431,7 +436,20 @@ async def publish_command(args: argparse.Namespace) -> int:
     # Update master CSV
     update_csv_deployment_status(master_csv, deployment_updates)
 
-    logger.info("Publishing complete")
+    # Write deployment warnings file for the workflow to read
+    if failed_platforms:
+        warnings_path = os.path.join(
+            os.environ.get("GITHUB_WORKSPACE", "/tmp"), "deploy_warnings.txt"
+        )
+        with open(warnings_path, "w", encoding="utf-8") as f:
+            f.write(",".join(failed_platforms))
+        logger.warning(
+            f"Deployment completed with errors. "
+            f"Failed platforms: {', '.join(failed_platforms)}"
+        )
+    else:
+        logger.info("Publishing complete — all platforms succeeded")
+
     return 0
 
 

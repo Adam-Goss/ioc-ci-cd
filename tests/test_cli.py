@@ -700,8 +700,8 @@ class TestPublishCommand:
             assert exit_code == 0
 
     @pytest.mark.asyncio
-    async def test_publish_misp_failure_returns_exit_3(self, tmp_path):
-        """Test that MISP publishing failure returns exit code 3."""
+    async def test_publish_misp_failure_continues(self, tmp_path):
+        """Test that MISP failure is non-fatal — pipeline continues."""
         master_csv = tmp_path / "master.csv"
         _write_master_csv(master_csv, [
             ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
@@ -714,18 +714,32 @@ class TestPublishCommand:
         mock_config.opencti_min_confidence_level = "high"
 
         with patch("src.cli.load_config", return_value=mock_config), \
-             patch("src.cli.MISPPublisher") as mock_misp_class:
+             patch("src.cli.MISPPublisher") as mock_misp_class, \
+             patch("src.cli.OpenCTIPublisher") as mock_opencti_class:
 
             mock_misp = AsyncMock()
             mock_misp.publish.side_effect = Exception("MISP connection failed")
             mock_misp_class.return_value = mock_misp
 
+            mock_opencti = AsyncMock()
+            mock_opencti_class.return_value = mock_opencti
+
             exit_code = await publish_command(args)
-            assert exit_code == 3
+
+            # Pipeline succeeds despite MISP failure
+            assert exit_code == 0
+
+            # OpenCTI should still have been called
+            mock_opencti.publish.assert_called_once()
+
+            # CSV should show only OpenCTI deployment
+            rows = _read_master_csv(master_csv)
+            assert rows[0]["deployed_to"] == "OpenCTI"
+            assert rows[0]["status"] == "deployed"
 
     @pytest.mark.asyncio
-    async def test_publish_opencti_failure_returns_exit_4(self, tmp_path):
-        """Test that OpenCTI publishing failure returns exit code 4."""
+    async def test_publish_opencti_failure_continues(self, tmp_path):
+        """Test that OpenCTI failure is non-fatal — pipeline continues."""
         master_csv = tmp_path / "master.csv"
         _write_master_csv(master_csv, [
             ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
@@ -749,7 +763,59 @@ class TestPublishCommand:
             mock_opencti_class.return_value = mock_opencti
 
             exit_code = await publish_command(args)
-            assert exit_code == 4
+
+            # Pipeline succeeds despite OpenCTI failure
+            assert exit_code == 0
+
+            # MISP should have succeeded
+            mock_misp.publish.assert_called_once()
+
+            # CSV should show only MISP deployment
+            rows = _read_master_csv(master_csv)
+            assert rows[0]["deployed_to"] == "MISP"
+            assert rows[0]["status"] == "deployed"
+
+    @pytest.mark.asyncio
+    async def test_publish_both_fail_writes_warnings(self, tmp_path):
+        """Test that both publishers failing writes a warnings file."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [
+            ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
+        ])
+
+        args = argparse.Namespace(master_csv=str(master_csv))
+
+        mock_config = MagicMock()
+        mock_config.misp_min_confidence_level = "medium"
+        mock_config.opencti_min_confidence_level = "high"
+
+        with patch("src.cli.load_config", return_value=mock_config), \
+             patch("src.cli.MISPPublisher") as mock_misp_class, \
+             patch("src.cli.OpenCTIPublisher") as mock_opencti_class, \
+             patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):
+
+            mock_misp = AsyncMock()
+            mock_misp.publish.side_effect = Exception("MISP down")
+            mock_misp_class.return_value = mock_misp
+
+            mock_opencti = AsyncMock()
+            mock_opencti.publish.side_effect = Exception("OpenCTI down")
+            mock_opencti_class.return_value = mock_opencti
+
+            exit_code = await publish_command(args)
+
+            # Still succeeds
+            assert exit_code == 0
+
+            # Warnings file should exist with failed platforms
+            warnings_file = tmp_path / "deploy_warnings.txt"
+            assert warnings_file.exists()
+            assert warnings_file.read_text() == "MISP,OpenCTI"
+
+            # CSV should show N/A (nothing deployed)
+            rows = _read_master_csv(master_csv)
+            assert rows[0]["deployed_to"] == "N/A"
+            assert rows[0]["status"] == "pending"
 
     @pytest.mark.asyncio
     async def test_publish_nonexistent_csv(self, tmp_path):

@@ -83,13 +83,25 @@ jobs:
           # Add your IOCs here:
           EOF
 
+          # Build commit message with deployment status
+          COMMIT_MSG="chore: clear indicators.txt and update master inventory [skip ci]"
+          if [ -f deploy_warnings.txt ]; then
+            FAILED=$(cat deploy_warnings.txt)
+            COMMIT_MSG="${COMMIT_MSG}
+
+          WARNING: Failed to deploy to: ${FAILED}
+          IOCs have been recorded in master-indicators.csv but were not pushed to the failed platform(s).
+          Check workflow logs for details."
+            echo "::warning::Deployment partially failed. Could not publish to: ${FAILED}"
+          fi
+
           # Configure git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # Commit changes
           git add iocs/indicators.txt iocs/master-indicators.csv
-          git commit -m "chore: clear indicators.txt and update master inventory [skip ci]" || echo "No changes to commit"
+          git commit -m "$COMMIT_MSG" || echo "No changes to commit"
           git push
 
       - name: Log deployment summary
@@ -99,3 +111,6 @@ jobs:
           echo "IOCs processed: ${{ steps.diff.outputs.count }}"
           echo "Commit: ${{ github.sha }}"
           echo "Master inventory updated and indicators.txt cleared"
+          if [ -f deploy_warnings.txt ]; then
+            echo "::warning::Some platforms failed deployment. See commit message for details."
+          fi
