@@ -563,8 +563,8 @@ class TestInventoryCommand:
             assert exit_code == 2
 
     @pytest.mark.asyncio
-    async def test_inventory_rejects_malformed(self, tmp_path):
-        """Test inventory rejects files with malformed IOCs."""
+    async def test_inventory_skips_malformed(self, tmp_path):
+        """Test inventory skips malformed IOCs but succeeds."""
         ioc_file = tmp_path / "bad.txt"
         ioc_file.write_text("999.999.999.999\n")
 
@@ -573,9 +573,39 @@ class TestInventoryCommand:
             master_csv=str(tmp_path / "master.csv"),
         )
 
-        with patch("src.cli.load_config"):
+        with patch("src.cli.load_config") as mock_config:
+            mock_config.return_value = MagicMock()
             exit_code = await inventory_command(args)
-            assert exit_code == 1
+            # No valid IOCs, but doesn't fail — just nothing to inventory
+            assert exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_inventory_processes_valid_and_skips_malformed(self, tmp_path):
+        """Test inventory processes valid IOCs and skips malformed ones."""
+        ioc_file = tmp_path / "mixed.txt"
+        ioc_file.write_text("192.168.1.1\n999.999.999.999\n")
+        master_csv = tmp_path / "master.csv"
+
+        args = argparse.Namespace(
+            ioc_file=str(ioc_file),
+            master_csv=str(master_csv),
+        )
+
+        result = _make_result(IOCType.IP, "192.168.1.1", 85.0)
+
+        with patch("src.cli.load_config") as mock_config, \
+             patch("src.cli.enrich_all") as mock_enrich:
+
+            mock_config.return_value = MagicMock()
+            mock_enrich.return_value = [result]
+
+            exit_code = await inventory_command(args)
+
+            assert exit_code == 0
+            assert master_csv.exists()
+            rows = _read_master_csv(master_csv)
+            assert len(rows) == 1
+            assert rows[0]["ioc_value"] == "192.168.1.1"
 
     @pytest.mark.asyncio
     async def test_inventory_empty_file(self, tmp_path):
