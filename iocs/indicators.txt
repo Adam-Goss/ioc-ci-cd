@@ -1,0 +1,16 @@
+# IOC CI/CD Pipeline - New Indicators
+#
+# Add your IOCs below (one per line, no type prefixes - auto-detected)
+# Supported types: IPv4, Domain, URL, MD5, SHA1, SHA256
+#
+# Lines starting with # are comments
+# Empty lines are ignored
+#
+# After merging to main, these IOCs will be:
+# 1. Enriched against VirusTotal, AbuseIPDB, and OTX AlienVault
+# 2. Deployed to MISP and OpenCTI (if above confidence threshold)
+# 3. Added to iocs/master-indicators.csv with metadata
+# 4. This file will be automatically cleared
+
+# Add your IOCs here:
+

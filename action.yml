@@ -1,0 +1,40 @@
+name: 'IOC CI/CD Pipeline'
+description: 'Validate, enrich, and publish Indicators of Compromise'
+author: 'Security Team'
+
+inputs:
+  command:
+    description: 'Command to run: validate or publish'
+    required: true
+  ioc_file:
+    description: 'Path to the IOC input file'
+    required: true
+  confidence_threshold:
+    description: 'Minimum confidence score (0-100) for IOCs to pass validation'
+    required: false
+    default: '70'
+  override_threshold:
+    description: 'Set to true to allow below-threshold IOCs'
+    required: false
+    default: 'false'
+
+outputs:
+  has_malformed:
+    description: 'Whether malformed IOCs were detected'
+  has_below_threshold:
+    description: 'Whether any IOCs scored below the confidence threshold'
+  report_path:
+    description: 'Path to the enrichment report Markdown file'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - ${{ inputs.command }}
+    - ${{ inputs.ioc_file }}
+    - --threshold=${{ inputs.confidence_threshold }}
+    - --override=${{ inputs.override_threshold }}
+
+branding:
+  icon: 'shield'
+  color: 'blue'

@@ -1,0 +1,4 @@
+ioc_type,ioc_value,confidence_score,deployed_to,added_date,commit_sha
+# Master IOC inventory - DO NOT EDIT MANUALLY
+# This file is automatically updated by the deployment workflow
+# Format: ioc_type,ioc_value,confidence_score,deployed_to,added_date,commit_sha

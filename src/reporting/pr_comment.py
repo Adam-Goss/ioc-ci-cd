@@ -1,0 +1,173 @@
+"""PR comment formatter for enrichment reports."""
+
+import os
+from pathlib import Path
+
+from src.models import ValidationReport
+
+
+def format_report(report: ValidationReport) -> str:
+    """
+    Format a validation report as Markdown for PR comments.
+
+    Args:
+        report: The validation report to format
+
+    Returns:
+        Markdown-formatted report string
+    """
+    lines: list[str] = []
+
+    # Header with summary stats
+    passed_count = sum(1 for r in report.enrichment_results if r.above_threshold)
+    below_threshold_count = len(report.enrichment_results) - passed_count
+    total_analyzed = len(report.valid_iocs)
+    malformed_count = len(report.malformed_lines)
+
+    lines.append("## IOC Enrichment Report\n")
+    lines.append(
+        f"**Analyzed**: {total_analyzed} | **Passed**: {passed_count} | "
+        f"**Below threshold**: {below_threshold_count} | **Malformed**: {malformed_count}\n"
+    )
+
+    if report.duplicates_removed > 0:
+        lines.append(f"**Duplicates removed**: {report.duplicates_removed}\n")
+
+    lines.append(
+        f"**Threshold**: {report.threshold} | **Override**: {'Yes' if report.override else 'No'}\n"
+    )
+    lines.append("\n---\n")
+
+    # Malformed IOCs section
+    if report.malformed_lines:
+        lines.append("\n### ⚠️ Malformed IOCs\n")
+        lines.append("| Line | Raw Input | Error |\n")
+        lines.append("|------|-----------|-------|\n")
+        for line_num, raw_line, error in report.malformed_lines:
+            # Escape pipe characters in the raw line and error
+            escaped_line = raw_line.replace("|", "\\|")
+            escaped_error = error.replace("|", "\\|")
+            lines.append(f"| {line_num} | `{escaped_line}` | {escaped_error} |\n")
+        lines.append("\n")
+
+    # Below threshold section
+    below_threshold_results = [r for r in report.enrichment_results if not r.above_threshold]
+    if below_threshold_results:
+        lines.append("\n### ⚠️ Below Threshold\n")
+        lines.append("| IOC | Type | VT | AbuseIPDB | OTX | Confidence | Status |\n")
+        lines.append("|-----|------|----|-----------|-----|------------|--------|\n")
+
+        for result in below_threshold_results:
+            ioc_value = result.ioc.value[:50]  # Truncate long values
+            ioc_type = result.ioc.ioc_type.value
+
+            # Extract scores
+            vt_score = _get_score(result, "virustotal")
+            aib_score = _get_score(result, "abuseipdb")
+            otx_score = _get_score(result, "otx")
+
+            lines.append(
+                f"| `{ioc_value}` | {ioc_type} | {vt_score} | {aib_score} | {otx_score} | "
+                f"{result.confidence:.1f} | :warning: Below threshold |\n"
+            )
+        lines.append("\n")
+
+    # Passed validation section (collapsible)
+    passed_results = [r for r in report.enrichment_results if r.above_threshold]
+    if passed_results:
+        lines.append("\n### ✅ Passed Validation\n")
+        lines.append(f"\n<details>\n<summary>Click to expand ({len(passed_results)} IOCs)</summary>\n\n")
+        lines.append("| IOC | Type | VT | AbuseIPDB | OTX | Confidence | Tags |\n")
+        lines.append("|-----|------|----|-----------|-----|------------|------|\n")
+
+        for result in passed_results:
+            ioc_value = result.ioc.value[:50]
+            ioc_type = result.ioc.ioc_type.value
+
+            vt_score = _get_score(result, "virustotal")
+            aib_score = _get_score(result, "abuseipdb")
+            otx_score = _get_score(result, "otx")
+
+            tags_str = ", ".join(result.tags[:3]) if result.tags else "-"
+
+            lines.append(
+                f"| `{ioc_value}` | {ioc_type} | {vt_score} | {aib_score} | {otx_score} | "
+                f"{result.confidence:.1f} | {tags_str} |\n"
+            )
+
+        lines.append("\n</details>\n\n")
+
+    # Source availability section
+    if report.enrichment_results:
+        lines.append("\n### 📊 Source Availability\n")
+        lines.append("| Source | Status | Available Results | Errors |\n")
+        lines.append("|--------|--------|-------------------|--------|\n")
+
+        # Aggregate source stats
+        sources = ["virustotal", "abuseipdb", "otx"]
+        for source in sources:
+            available_count = 0
+            error_count = 0
+
+            for result in report.enrichment_results:
+                for score in result.scores:
+                    if score.source_name == source:
+                        if score.available:
+                            available_count += 1
+                        else:
+                            error_count += 1
+
+            total = available_count + error_count
+            status = "✅" if error_count == 0 else "⚠️"
+            lines.append(
+                f"| {source.title()} | {status} | {available_count}/{total} | {error_count} |\n"
+            )
+
+    lines.append("\n---\n")
+    lines.append("\n*Generated by [IOC CI/CD Pipeline](https://github.com)*\n")
+
+    return "".join(lines)
+
+
+def _get_score(result, source_name: str) -> str:
+    """Get score string for a source from enrichment result."""
+    for score in result.scores:
+        if score.source_name == source_name:
+            if score.available:
+                return f"{score.raw_score:.1f}"
+            else:
+                return "N/A"
+    return "N/A"
+
+
+def write_report(markdown: str, output_path: str) -> None:
+    """
+    Write the Markdown report to a file.
+
+    Args:
+        markdown: The Markdown content
+        output_path: Path to write the file
+    """
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(markdown, encoding="utf-8")
+
+
+def set_github_outputs(report: ValidationReport) -> None:
+    """
+    Set GitHub Actions outputs for the workflow.
+
+    Args:
+        report: The validation report
+    """
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if not github_output:
+        return
+
+    with open(github_output, "a", encoding="utf-8") as f:
+        f.write(f"has_malformed={'true' if report.malformed_lines else 'false'}\n")
+
+        below_threshold = any(not r.above_threshold for r in report.enrichment_results)
+        f.write(f"has_below_threshold={'true' if below_threshold else 'false'}\n")
+
+        f.write("report_path=/tmp/enrichment_report.md\n")
