@@ -1,89 +1,134 @@
-name: Deploy IOCs
+name: Validate IOCs
 
 on:
-  push:
-    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
     paths:
       - 'iocs/indicators.txt'
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
-  deploy:
+  validate-and-enrich:
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Determine newly merged IOCs
+      - name: Determine changed IOCs
         id: diff
         run: |
-          # Diff against previous commit to find what the merge added
-          git diff HEAD~1..HEAD -- iocs/indicators.txt \
-            | grep '^+' | grep -v '^+++' | sed 's/^+//' > /tmp/new_iocs.txt || true
+          # Extract only the newly added lines in the IOC file
+          # Write to workspace so the Docker container can access it
+          git diff origin/${{ github.base_ref }}...HEAD -- iocs/indicators.txt \
+            | grep '^+' | grep -v '^+++' | sed 's/^+//' > new_iocs.txt || true
 
-          count=$(wc -l < /tmp/new_iocs.txt || echo "0")
+          # Count lines
+          count=$(wc -l < new_iocs.txt || echo "0")
           echo "count=$count" >> "$GITHUB_OUTPUT"
 
-          echo "Found $count newly merged IOC lines"
-          cat /tmp/new_iocs.txt
+          echo "Found $count new IOC lines"
+          cat new_iocs.txt
 
       - name: Skip if no new IOCs
         if: steps.diff.outputs.count == '0'
         run: |
-          echo "No new IOCs to deploy."
+          echo "No new IOCs detected, skipping validation"
           exit 0
 
-      - name: Publish to MISP and OpenCTI
-        if: steps.diff.outputs.count != '0'
+      - name: Validate and enrich IOCs
+        id: enrich
         uses: ./
         with:
-          command: publish
-          ioc_file: /tmp/new_iocs.txt
-          confidence_threshold: ${{ vars.CONFIDENCE_THRESHOLD || '70' }}
+          command: validate
+          ioc_file: new_iocs.txt
+          confidence_threshold: ${{ github.event.inputs.confidence_threshold || '70' }}
+          override_threshold: ${{ github.event.inputs.override_threshold || 'false' }}
         env:
           VT_API_KEY: ${{ secrets.VT_API_KEY }}
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
-          MISP_URL: ${{ secrets.MISP_URL }}
-          MISP_API_KEY: ${{ secrets.MISP_API_KEY }}
-          MISP_VERIFY_SSL: ${{ vars.MISP_VERIFY_SSL || 'true' }}
-          OPENCTI_URL: ${{ secrets.OPENCTI_URL }}
-          OPENCTI_TOKEN: ${{ secrets.OPENCTI_TOKEN }}
 
-      - name: Clear indicators.txt and commit master inventory
+      - name: Post enrichment report as PR comment
         if: steps.diff.outputs.count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Read the report from workspace (written by Docker container)
+            const reportPath = path.join(process.env.GITHUB_WORKSPACE, 'enrichment_report.md');
+            let body;
+            try {
+              body = fs.readFileSync(reportPath, 'utf8');
+            } catch (error) {
+              console.log('No report file found at ' + reportPath + ', skipping comment');
+              return;
+            }
+
+            // Find and update existing bot comment, or create new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const marker = '<!-- ioc-enrichment-report -->';
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+
+            const fullBody = marker + '\n\n' + body;
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: fullBody,
+              });
+              console.log('Updated existing comment');
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: fullBody,
+              });
+              console.log('Created new comment');
+            }
+
+      - name: Fail if malformed IOCs detected
+        if: steps.enrich.outputs.has_malformed == 'true'
         run: |
-          # Clear the indicators.txt file
-          cat > iocs/indicators.txt << 'EOF'
-          # IOC CI/CD Pipeline - New Indicators
-          #
-          # Add your IOCs below (one per line, no type prefixes - auto-detected)
-          # Supported types: IPv4, Domain, URL, MD5, SHA1, SHA256
-          #
-          # Lines starting with # are comments
-          # Empty lines are ignored
+          echo "::error::Malformed IOCs detected. See the PR comment for details."
+          exit 1
 
-          # Add your IOCs here:
-          EOF
-
-          # Configure git
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Commit changes
-          git add iocs/indicators.txt iocs/master-indicators.csv
-          git commit -m "chore: clear indicators.txt and update master inventory [skip ci]" || echo "No changes to commit"
-          git push
-
-      - name: Log deployment summary
-        if: steps.diff.outputs.count != '0'
+      - name: Fail if below-threshold IOCs without override
+        if: >
+          steps.enrich.outputs.has_below_threshold == 'true' &&
+          github.event.inputs.override_threshold != 'true'
         run: |
-          echo "✅ Deployment complete"
-          echo "IOCs processed: ${{ steps.diff.outputs.count }}"
-          echo "Commit: ${{ github.sha }}"
-          echo "Master inventory updated and indicators.txt cleared"
+          echo "::error::IOCs below confidence threshold detected. Set override_threshold to true or raise scores."
+          exit 1
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short --cov=src --cov-report=term
