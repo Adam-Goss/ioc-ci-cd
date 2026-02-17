@@ -14,17 +14,26 @@
 
 # Add your IOCs here:
 
-https://qrco.de/bgP6vx
-https://cdnimg.jeayacrai.in.net/qY42h5ei3SBo9ZmvO!/
-solulu.vip
-Olb228hoki.live
-radenspinrtp.cloud
-snitch.open-group.site
-gui.snitch-dev.site
 1f6d28370f4c2b13f3967b38f67f77eee7f5fba9e7743b6c66a8feb18ae8f33e
 a3cf1c86731703043b3614e085b9c8c224d4125370f420ad031ad63c14d6c3ec
 a511be5164dc1122fb5a7daa3eef9467e43d8458425b15a640235796006590c9
+skycloudcenter.com
+self-dns.it.com
+safe-dns.it.com
+cdncheck.it.com
+95.179.213.0
 45.76.155.202
 45.77.31.210
 61.4.102.97
 59.110.7.32
+95.179.213.0/update/AutoUpdater.exe
+95.179.213.0/update/Upgrade.exe
+45.32.144.255/update/update.exe
+45.76.155.202/update/update.exe
+59.110.7.32/dpixel
+self-dns.it.com/help/Get-Start
+self-dns.it.com/resolve
+self-dns.it.com/dns-query
+safe-dns.it.com/help/Get-Start
+safe-dns.it.com/resolve
+safe-dns.it.com/dns-query
