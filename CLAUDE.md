@@ -76,16 +76,14 @@ d41d8cd98f00b204e9800998ecf8427e
 - **Actions**: Diffs new IOCs, parses, enriches against VT/AbuseIPDB/OTX, posts PR comment
 - **Fail conditions**: Malformed IOCs, or below threshold without override
 - **Permissions**: `contents: read`, `pull-requests: write`
+- **Note**: Does NOT modify master inventory; that happens on merge
 
 ### 2. `deploy.yml` (Post-merge deployment)
 - **Trigger**: Push to `main` when `iocs/indicators.txt` changes
-- **Actions**:
-  1. Diffs new IOCs
-  2. Re-enriches (fresh scores)
-  3. Pushes to MISP + OpenCTI
-  4. Appends ALL IOCs to `master-indicators.csv` with metadata
-  5. Clears `indicators.txt` for next batch
-  6. Commits changes with `[skip ci]`
+- **Actions** (two-phase):
+  1. **Phase 1 — Inventory**: Diffs new IOCs, enriches (fresh scores), appends ALL valid IOCs to `master-indicators.csv` with `status=pending` and confidence level
+  2. **Phase 2 — Deploy**: Reads pending IOCs from CSV, filters by per-publisher confidence levels, pushes to MISP/OpenCTI, updates CSV with deployment status
+  3. **Cleanup**: Clears `indicators.txt`, commits changes with `[skip ci]`
 - **Environment**: `production` (can add required reviewers)
 
 ## Enrichment Sources
@@ -109,6 +107,19 @@ d41d8cd98f00b204e9800998ecf8427e
 ### Confidence Aggregation
 Weighted average across **available** sources (weights renormalized when a source doesn't support the IOC type or errors out).
 
+### Confidence Levels
+
+IOCs are classified into three confidence levels based on their aggregated score:
+
+- **Low**: 0–29 (likely benign or insufficient data)
+- **Medium**: 30–69 (moderate confidence, may be malicious)
+- **High**: 70–100 (high confidence malicious)
+
+Each publisher independently filters IOCs by a configurable minimum confidence level:
+
+- **MISP**: Default `medium` (deploys medium + high IOCs)
+- **OpenCTI**: Default `high` (deploys only high confidence IOCs)
+
 ## Secrets & Configuration
 
 ### Required Secrets
@@ -116,7 +127,9 @@ Weighted average across **available** sources (weights renormalized when a sourc
 - Deploy only: `MISP_URL`, `MISP_API_KEY`, `OPENCTI_URL`, `OPENCTI_TOKEN`
 
 ### Optional Variables
-- `CONFIDENCE_THRESHOLD` (default: 70)
+- `CONFIDENCE_THRESHOLD` (default: 70) — used for PR validation only
+- `MISP_MIN_CONFIDENCE_LEVEL` (default: `medium`) — minimum level for MISP deployment
+- `OPENCTI_MIN_CONFIDENCE_LEVEL` (default: `high`) — minimum level for OpenCTI deployment
 - `MISP_VERIFY_SSL`, `MISP_DISTRIBUTION`, `MISP_AUTO_PUBLISH`
 - `WEIGHT_VT`, `WEIGHT_ABUSEIPDB`, `WEIGHT_OTX`
 
@@ -148,6 +161,19 @@ export ABUSEIPDB_API_KEY="..."
 export OTX_API_KEY="..."
 
 python -m src.cli validate iocs/indicators.txt --threshold=70
+
+# Inventory IOCs (Phase 1 of deploy)
+python -m src.cli inventory iocs/indicators.txt
+
+# Deploy from master CSV (Phase 2 of deploy)
+export MISP_URL="https://..."
+export MISP_API_KEY="..."
+export OPENCTI_URL="https://..."
+export OPENCTI_TOKEN="..."
+export MISP_MIN_CONFIDENCE_LEVEL="medium"
+export OPENCTI_MIN_CONFIDENCE_LEVEL="high"
+
+python -m src.cli publish
 ```
 
 ## Code Conventions
@@ -170,7 +196,7 @@ python -m src.cli validate iocs/indicators.txt --threshold=70
 - [x] Confidence aggregator
 - [x] Publishers (MISP, OpenCTI)
 - [x] PR comment formatter
-- [x] CLI entrypoint with master inventory support
+- [x] CLI entrypoint with validate/inventory/publish commands
 - [x] GitHub Action metadata (`action.yml`, `Dockerfile`)
 - [x] Workflows (`validate.yml`, `deploy.yml`)
 - [x] README.md, PROJECT_SPEC.md, WORKFLOW.md
@@ -231,24 +257,32 @@ python -m src.cli validate iocs/indicators.txt --threshold=70
 The pipeline maintains a **permanent audit trail** at `iocs/master-indicators.csv`:
 
 **Features**:
-- Appends ALL processed IOCs (passed and failed)
+- Appends ALL valid IOCs with confidence scores and levels
 - Deduplication across batches (checks before appending)
-- Tracks deployment status (MISP,OpenCTI or N/A)
+- Tracks deployment lifecycle via `status` column (`pending` → `deployed`)
+- Records which platforms received each IOC (`deployed_to`)
 - Includes timestamp and commit SHA for traceability
 
 **CSV Format**:
 ```csv
-ioc_type,ioc_value,confidence_score,deployed_to,added_date,commit_sha
-domain,evil.com,85.23,MISP,OpenCTI,2026-02-17 14:30:00,abc12345
-ip,192.0.2.1,45.67,N/A,2026-02-17 14:30:00,abc12345
+ioc_type,ioc_value,confidence_score,confidence_level,status,deployed_to,added_date,commit_sha
+domain,evil.com,85.23,high,deployed,MISP,OpenCTI,2026-02-17 14:30:00,abc12345
+ip,192.0.2.1,45.67,medium,deployed,MISP,2026-02-17 14:30:00,abc12345
+ip,10.0.0.1,15.00,low,pending,N/A,2026-02-17 14:30:00,abc12345
 ```
+
+**Columns**:
+- `confidence_level`: LOW (<30), MEDIUM (30-69), HIGH (70+)
+- `status`: `pending` (awaiting deployment) or `deployed` (processed)
+- `deployed_to`: Which platforms received the IOC (`MISP`, `OpenCTI`, `MISP,OpenCTI`, or `N/A`)
 
 **Workflow**:
 1. IOCs added to `indicators.txt`
-2. PR validation enriches and reports
-3. Merge deploys to MISP/OpenCTI
-4. All IOCs appended to `master-indicators.csv`
-5. `indicators.txt` automatically cleared (ready for next batch)
+2. PR validation enriches and reports (master CSV not touched)
+3. Merge triggers two-phase deploy:
+   - **Inventory**: Enrich IOCs, append to `master-indicators.csv` as `pending`
+   - **Deploy**: Read pending IOCs from CSV, filter per-publisher, publish, mark `deployed`
+4. `indicators.txt` automatically cleared (ready for next batch)
 
 See [WORKFLOW.md](WORKFLOW.md) for complete flow diagram.
 

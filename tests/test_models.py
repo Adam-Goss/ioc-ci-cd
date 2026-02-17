@@ -2,7 +2,43 @@
 
 import pytest
 
-from src.models import EnrichmentResult, IOC, IOCType, SourceScore, ValidationReport
+from src.models import (
+    ConfidenceLevel,
+    EnrichmentResult,
+    IOC,
+    IOCType,
+    SourceScore,
+    ValidationReport,
+    get_confidence_level,
+)
+
+
+class TestConfidenceLevel:
+    """Tests for ConfidenceLevel enum and get_confidence_level helper."""
+
+    def test_low_boundary(self):
+        """Test low confidence level boundaries."""
+        assert get_confidence_level(0.0) == ConfidenceLevel.LOW
+        assert get_confidence_level(15.0) == ConfidenceLevel.LOW
+        assert get_confidence_level(29.9) == ConfidenceLevel.LOW
+
+    def test_medium_boundary(self):
+        """Test medium confidence level boundaries."""
+        assert get_confidence_level(30.0) == ConfidenceLevel.MEDIUM
+        assert get_confidence_level(50.0) == ConfidenceLevel.MEDIUM
+        assert get_confidence_level(69.9) == ConfidenceLevel.MEDIUM
+
+    def test_high_boundary(self):
+        """Test high confidence level boundaries."""
+        assert get_confidence_level(70.0) == ConfidenceLevel.HIGH
+        assert get_confidence_level(85.0) == ConfidenceLevel.HIGH
+        assert get_confidence_level(100.0) == ConfidenceLevel.HIGH
+
+    def test_enum_values(self):
+        """Test ConfidenceLevel enum values."""
+        assert ConfidenceLevel.LOW.value == "low"
+        assert ConfidenceLevel.MEDIUM.value == "medium"
+        assert ConfidenceLevel.HIGH.value == "high"
 
 
 class TestIOC:

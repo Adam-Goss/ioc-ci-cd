@@ -45,9 +45,46 @@ class PipelineConfig:
     weight_abuseipdb: float = 0.25
     weight_otx: float = 0.30
 
+    # Per-publisher minimum confidence levels ("low", "medium", "high")
+    misp_min_confidence_level: str = "medium"
+    opencti_min_confidence_level: str = "high"
+
+
+VALID_CONFIDENCE_LEVELS = ("low", "medium", "high")
+
+
+def _validate_confidence_level(value: str, name: str) -> str:
+    """Validate a confidence level string.
+
+    Args:
+        value: The level string to validate.
+        name: Name of the config field (for error messages).
+
+    Returns:
+        Lowercased valid level string.
+
+    Raises:
+        ValueError: If level is not one of low, medium, high.
+    """
+    level = value.lower()
+    if level not in VALID_CONFIDENCE_LEVELS:
+        raise ValueError(
+            f"Invalid {name}: '{value}'. Must be one of {VALID_CONFIDENCE_LEVELS}"
+        )
+    return level
+
 
 def load_config() -> PipelineConfig:
     """Load configuration from environment variables."""
+    misp_level = _validate_confidence_level(
+        os.environ.get("MISP_MIN_CONFIDENCE_LEVEL", "medium"),
+        "MISP_MIN_CONFIDENCE_LEVEL",
+    )
+    opencti_level = _validate_confidence_level(
+        os.environ.get("OPENCTI_MIN_CONFIDENCE_LEVEL", "high"),
+        "OPENCTI_MIN_CONFIDENCE_LEVEL",
+    )
+
     return PipelineConfig(
         vt_api_key=os.environ["VT_API_KEY"],
         abuseipdb_api_key=os.environ["ABUSEIPDB_API_KEY"],
@@ -66,4 +103,6 @@ def load_config() -> PipelineConfig:
         weight_vt=float(os.environ.get("WEIGHT_VT", "0.45")),
         weight_abuseipdb=float(os.environ.get("WEIGHT_ABUSEIPDB", "0.25")),
         weight_otx=float(os.environ.get("WEIGHT_OTX", "0.30")),
+        misp_min_confidence_level=misp_level,
+        opencti_min_confidence_level=opencti_level,
     )

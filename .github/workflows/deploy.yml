@@ -39,13 +39,22 @@ jobs:
           echo "No new IOCs to deploy."
           exit 0
 
-      - name: Publish to MISP and OpenCTI
+      - name: Inventory new IOCs (Phase 1)
+        if: steps.diff.outputs.count != '0'
+        uses: ./
+        with:
+          command: inventory
+          ioc_file: new_iocs.txt
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
+          OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
+
+      - name: Deploy to MISP and OpenCTI (Phase 2)
         if: steps.diff.outputs.count != '0'
         uses: ./
         with:
           command: publish
-          ioc_file: new_iocs.txt
-          confidence_threshold: ${{ vars.CONFIDENCE_THRESHOLD || '70' }}
         env:
           VT_API_KEY: ${{ secrets.VT_API_KEY }}
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
@@ -53,8 +62,10 @@ jobs:
           MISP_URL: ${{ secrets.MISP_URL }}
           MISP_API_KEY: ${{ secrets.MISP_API_KEY }}
           MISP_VERIFY_SSL: ${{ vars.MISP_VERIFY_SSL || 'true' }}
+          MISP_MIN_CONFIDENCE_LEVEL: ${{ vars.MISP_MIN_CONFIDENCE_LEVEL || 'medium' }}
           OPENCTI_URL: ${{ secrets.OPENCTI_URL }}
           OPENCTI_TOKEN: ${{ secrets.OPENCTI_TOKEN }}
+          OPENCTI_MIN_CONFIDENCE_LEVEL: ${{ vars.OPENCTI_MIN_CONFIDENCE_LEVEL || 'high' }}
 
       - name: Clear indicators.txt and commit master inventory
         if: steps.diff.outputs.count != '0'

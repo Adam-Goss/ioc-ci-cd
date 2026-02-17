@@ -77,9 +77,10 @@ Last Updated: 2026-02-17
 
 
 
-### Fixes
+### Fixes ✅
 
-- [] need to fix deploy - take only high value IOCs and deploy
-- [] need to fix validate/deploy - add all IOCs to master-iocs.csv and clear indicators.txt (don't faile pipeline, just don't deploy them)
-- [] need to fix validate - add all IOCs to master-iocs.csv and clear indicators.txt (move this step from the deploy step)
-- [] need to fix deploy - deploy high confidence IOCs only from master-iocs.csv file (that are new)
+- [x] Deploy split into two phases: Inventory (enrich + add to CSV) and Deploy (publish from CSV)
+- [x] All valid IOCs added to master-indicators.csv with confidence level (low/medium/high) and status (pending/deployed)
+- [x] Per-publisher configurable confidence levels: MISP defaults to medium+, OpenCTI defaults to high only
+- [x] Deploy reads pending IOCs from master CSV, filters per-publisher, publishes, marks as deployed
+- [x] indicators.txt cleared after deploy (unchanged behavior)

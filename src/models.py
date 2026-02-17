@@ -16,6 +16,31 @@ class IOCType(Enum):
     URL = "url"
 
 
+class ConfidenceLevel(Enum):
+    """IOC confidence level based on enrichment score."""
+
+    LOW = "low"  # 0-29
+    MEDIUM = "medium"  # 30-69
+    HIGH = "high"  # 70-100
+
+
+def get_confidence_level(score: float) -> ConfidenceLevel:
+    """Convert a numeric confidence score to a confidence level.
+
+    Args:
+        score: Confidence score (0-100).
+
+    Returns:
+        ConfidenceLevel classification.
+    """
+    if score >= 70:
+        return ConfidenceLevel.HIGH
+    elif score >= 30:
+        return ConfidenceLevel.MEDIUM
+    else:
+        return ConfidenceLevel.LOW
+
+
 class HashAlgorithm(Enum):
     """Hash algorithm types."""
 
