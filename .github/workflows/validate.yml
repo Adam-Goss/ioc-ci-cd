@@ -52,6 +52,7 @@ jobs:
           VT_API_KEY: ${{ secrets.VT_API_KEY }}
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
+          ENRICHMENT_SOURCES: ${{ vars.ENRICHMENT_SOURCES || 'virustotal,abuseipdb,otx' }}
 
       - name: Post enrichment report as PR comment
         if: always() && steps.diff.outputs.count != '0'
@@ -119,9 +120,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libmagic1
 
       - name: Install dependencies
         run: pip install -e ".[dev]"

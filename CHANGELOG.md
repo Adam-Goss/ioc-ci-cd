@@ -2,6 +2,44 @@
 
 All notable changes to the IOC CI/CD Pipeline project will be documented in this file.
 
+## [0.3.0] - 2026-02-18
+
+### Changed (Breaking)
+- **Publisher architecture**: Replaced TI platform publishers (MISP, OpenCTI) with security hunting publishers (Splunk, Elasticsearch)
+  - Deploy Phase 2 now _hunts_ for IOCs in configured SIEMs instead of pushing to TI platforms
+  - Hunt results are logged to workflow run only (not PR comments)
+- **CSV schema**: Removed `status` and `deployed_to` columns; added `last_hunted_date`
+  - New format: `ioc_type,ioc_value,confidence_score,confidence_level,added_date,last_hunted_date,commit_sha`
+- **IOC selection**: Age-based selection replaces status-based — Phase 2 hunts IOCs within `MAX_IOC_AGE_DAYS` window (default: 30)
+- **Modular architecture**: Enrichment sources and hunting publishers now selectable via `ENRICHMENT_SOURCES` and `PUBLISHERS` env vars
+- `pyproject.toml`: Removed `pymisp`, `pycti`, `stix2` dependencies
+
+### Added
+- `HuntResult` dataclass in `models.py` (platform, hits_found, earliest_hit, latest_hit, sample_events, query_used)
+- `HuntPublisher` ABC in `publishers/base.py` (replaces `Publisher`)
+- Splunk hunter (`publishers/splunk.py`) — SPL queries via REST API, per-IOC-type templates
+- Elasticsearch hunter (`publishers/elastic.py`) — ECS-mapped queries via REST API
+- `ENRICHMENT_REGISTRY` in `aggregator.py` — enables modular source selection
+- `PUBLISHER_REGISTRY` in `cli.py` — enables modular publisher selection
+- `read_iocs_by_age()` and `update_csv_last_hunted()` CSV helpers (replace `read_pending_iocs_from_csv` / `update_csv_deployment_status`)
+- New config fields: `enrichment_sources`, `publishers`, `max_ioc_age_days`, `splunk_url`, `splunk_token`, `splunk_index`, `elastic_url`, `elastic_api_key`, `elastic_index`, `elastic_verify_ssl`, `publisher_min_confidence`
+- New `action.yml` inputs: `enrichment_sources`, `publishers`, `max_ioc_age_days`
+
+### Removed
+- `src/publishers/misp.py` — MISP publisher
+- `src/publishers/opencti.py` — OpenCTI publisher
+- `tests/test_publishers/test_misp.py`
+- `tests/test_publishers/test_opencti.py`
+- Config fields: `misp_url`, `misp_api_key`, `misp_verify_ssl`, `misp_distribution`, `misp_auto_publish`, `opencti_url`, `opencti_token`
+
+### Testing
+- 189 tests total, 95% coverage (was 160 tests, 96%)
+- New: `tests/test_publishers/test_splunk.py` (17 tests) — SPL generation, aioresponses HTTP mocking
+- New: `tests/test_publishers/test_elastic.py` (20 tests) — ECS query generation, aioresponses HTTP mocking
+- Updated: `tests/test_cli.py` — age-based CSV helpers, `patch.dict(PUBLISHER_REGISTRY)` pattern
+
+---
+
 ## [0.2.0] - 2026-02-17
 
 ### Changed

@@ -86,65 +86,74 @@ This document describes the complete workflow from IOC submission to deployment 
     └─> Only lines added by this merge commit
 
 13. Enrichment runs
-    └─> Fresh scores from all 3 TI sources
+    └─> Fresh scores from all 3 TI sources (or configured subset)
     └─> Malformed IOCs skipped (warned, not fatal)
 
-14. ALL valid IOCs appended to master CSV as "pending"
-    ┌───────────────────────────────────────────────────────────────────────┐
-    │  iocs/master-indicators.csv                                            │
-    ├───────────────────────────────────────────────────────────────────────┤
-    │  ioc_type,ioc_value,confidence_score,confidence_level,status,          │
-    │  deployed_to,added_date,commit_sha                                     │
-    │  domain,evil.com,85.23,high,pending,N/A,2026-02-17 14:30:00,abc12345  │
-    │  ip,192.0.2.1,45.67,medium,pending,N/A,2026-02-17 14:30:00,abc12345   │
-    │  ip,10.0.0.1,15.00,low,pending,N/A,2026-02-17 14:30:00,abc12345       │
-    └───────────────────────────────────────────────────────────────────────┘
+14. ALL valid IOCs appended to master CSV (last_hunted_date empty)
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │  iocs/master-indicators.csv                                              │
+    ├─────────────────────────────────────────────────────────────────────────┤
+    │  ioc_type,ioc_value,confidence_score,confidence_level,                   │
+    │  added_date,last_hunted_date,commit_sha                                  │
+    │  domain,evil.com,85.23,high,2026-02-17 14:30:00,,abc12345               │
+    │  ip,192.0.2.1,45.67,medium,2026-02-17 14:30:00,,abc12345                │
+    │  ip,10.0.0.1,15.00,low,2026-02-17 14:30:00,,abc12345                    │
+    └─────────────────────────────────────────────────────────────────────────┘
     └─> ALL valid IOCs appended (low, medium, and high)
     └─> Deduplication prevents re-adding existing IOCs
     └─> Confidence level computed: LOW (<30), MEDIUM (30-69), HIGH (70+)
-    └─> deployed_to = "N/A" initially, status = "pending"
+    └─> last_hunted_date is empty until first hunt run
 
-              PHASE 2 — DEPLOY
+              PHASE 2 — HUNT
 
-15. Per-publisher confidence filtering
-    └─> Each publisher independently filters by configurable min level
-    └─> MISP: deploys medium + high IOCs (default)
-    └─> OpenCTI: deploys only high IOCs (default)
-    └─> Configurable via MISP_MIN_CONFIDENCE_LEVEL / OPENCTI_MIN_CONFIDENCE_LEVEL
+15. Age-based IOC selection
+    └─> Reads IOCs from master CSV where added_date >= now - MAX_IOC_AGE_DAYS
+    └─> Default window: 30 days
+    └─> Each publisher independently filters by configurable min confidence level
+    └─> Default: all confidence levels (low+)
 
-16. MISP publisher creates event (if IOCs meet level)
-    ┌─────────────────────────────────┐
-    │  MISP Event                      │
-    ├─────────────────────────────────┤
-    │  Title: IOC Pipeline Import -   │
-    │         2026-02-17 - abc12345    │
-    │  Distribution: Org only (0)      │
-    │  TLP: amber                      │
-    ├─────────────────────────────────┤
-    │  Attributes:                     │
-    │  - ip-dst: 192.0.2.1            │
-    │  - domain: evil.com             │
-    │  - url: http://malware.site/... │
-    │  - sha256: e3b0c442...          │
-    │  Each tagged with confidence    │
-    └─────────────────────────────────┘
+16. Splunk hunter runs SPL searches (if IOCs meet level)
+    ┌──────────────────────────────────────────────────┐
+    │  For each IOC:                                    │
+    │  1. Build SPL query per IOC type                  │
+    │     IP:     index=main (src_ip="x" OR dest_ip="x")│
+    │     Domain: index=main (query="x" OR url="*x*")   │
+    │     URL:    index=main url="x"                    │
+    │     Hash:   index=main (file_hash="x" OR sha256)  │
+    │  2. Submit async search job (POST)                 │
+    │  3. Poll until DONE                                │
+    │  4. Read results: hit count, timestamps           │
+    └──────────────────────────────────────────────────┘
     └─> Failure is non-fatal: pipeline continues
 
-17. OpenCTI publisher creates observables (if IOCs meet level)
-    ┌─────────────────────────────────┐
-    │  For each IOC:                   │
-    │  1. Create STIX Observable (SCO) │
-    │  2. Set x_opencti_score          │
-    │  3. Promote to Indicator         │
-    │  4. Add labels from enrichment   │
-    └─────────────────────────────────┘
+17. Elastic hunter runs _search queries (if IOCs meet level)
+    ┌──────────────────────────────────────────────────┐
+    │  For each IOC:                                    │
+    │  1. Build ECS query per IOC type                  │
+    │     IP:     source.ip / destination.ip            │
+    │     Domain: dns.question.name / url.domain        │
+    │     URL:    url.full                              │
+    │     Hash:   file.hash.md5/sha1/sha256             │
+    │  2. POST _search with @timestamp range filter     │
+    │  3. Parse total hits and sample events            │
+    └──────────────────────────────────────────────────┘
     └─> Failure is non-fatal: pipeline continues
 
-18. Master CSV updated with deployment status
-    └─> status: "pending" → "deployed"
-    └─> deployed_to: "MISP", "OpenCTI", "MISP,OpenCTI", or "N/A" (if no publisher succeeded)
+18. Hunt results logged to workflow run
+    ┌─────────────────────────────────┐
+    │  Hunt summary (workflow logs)   │
+    ├─────────────────────────────────┤
+    │  Splunk: evil.com → 47 hits     │
+    │  Splunk: 192.0.2.1 → 0 hits    │
+    │  Elastic: evil.com → 12 hits   │
+    │  Elastic: 192.0.2.1 → 3 hits  │
+    └─────────────────────────────────┘
+    └─> Results appear in workflow logs only (not PR comments)
 
-19. indicators.txt cleared
+19. Master CSV updated with last_hunted_date
+    └─> last_hunted_date set to current UTC timestamp for hunted IOCs
+
+20. indicators.txt cleared
     ┌─────────────────────────────────┐
     │  iocs/indicators.txt             │
     ├─────────────────────────────────┤
@@ -154,21 +163,23 @@ This document describes the complete workflow from IOC submission to deployment 
     │  (empty - ready for next batch)  │
     └─────────────────────────────────┘
 
-20. Changes committed back to repo
+21. Changes committed back to repo
     └─> Commit message: "chore: clear indicators.txt and update master inventory [skip ci]"
     └─> If publisher failed: warning appended to commit message
     └─> [skip ci] prevents recursive workflow trigger
     └─> Bot user: github-actions[bot]
 
-21. Deployment summary logged
+22. Hunt summary logged
     ┌─────────────────────────────────┐
-    │  ✅ Deployment complete          │
-    │  IOCs processed: 15              │
+    │  Hunt complete                   │
+    │  IOCs hunted: 15                 │
+    │  Splunk hits: 52 total           │
+    │  Elastic hits: 18 total          │
     │  Master inventory updated        │
     │  indicators.txt cleared          │
     │  ⚠️  (if applicable)             │
-    │  MISP: failed                    │
-    │  See commit message for details  │
+    │  Elastic: connection refused     │
+    │  See workflow logs for details   │
     └─────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -177,9 +188,9 @@ This document describes the complete workflow from IOC submission to deployment 
 
 Final repository state:
   - indicators.txt: Empty (ready for next batch)
-  - master-indicators.csv: Updated with new IOCs (status=deployed, deployed_to filled)
-  - MISP: Event created with IOCs meeting MISP confidence level
-  - OpenCTI: Observables/indicators created for IOCs meeting OpenCTI confidence level
+  - master-indicators.csv: Updated with new IOCs (last_hunted_date filled)
+  - Splunk: SPL search results logged for IOCs meeting Splunk confidence level
+  - Elasticsearch: _search results logged for IOCs meeting Elastic confidence level
   - Git history: Commit with [skip ci] (includes warning if any publisher failed)
 ```
 
@@ -199,13 +210,13 @@ Final repository state:
 ### `iocs/master-indicators.csv` (Permanent Inventory)
 - **Purpose**: Permanent audit trail of all processed IOCs
 - **Lifecycle**: Append-only (never cleared)
-- **Updated**: Phase 1 adds rows as `pending`, Phase 2 marks them `deployed`
+- **Updated**: Phase 1 adds rows with empty `last_hunted_date`; Phase 2 fills it in after hunting
 - **Deduplication**: Prevents re-adding IOCs already in inventory
 - **Format**: CSV with headers
   ```
-  ioc_type,ioc_value,confidence_score,confidence_level,status,deployed_to,added_date,commit_sha
+  ioc_type,ioc_value,confidence_score,confidence_level,added_date,last_hunted_date,commit_sha
   ```
-- **Status lifecycle**: `pending` (after inventory) → `deployed` (after publish)
+- **Age-based selection**: Phase 2 hunts IOCs where `added_date >= now - MAX_IOC_AGE_DAYS`
 - **Confidence levels**: low (<30), medium (30-69), high (70+)
 
 ---
@@ -229,9 +240,9 @@ Final repository state:
 - `ABUSEIPDB_API_KEY` - AbuseIPDB
 - `OTX_API_KEY` - OTX AlienVault
 
-**Publishing** (deploy only):
-- `MISP_URL`, `MISP_API_KEY`
-- `OPENCTI_URL`, `OPENCTI_TOKEN`
+**Hunting** (deploy only):
+- `SPLUNK_URL`, `SPLUNK_TOKEN` (if Splunk enabled)
+- `ELASTIC_URL`, `ELASTIC_API_KEY` (if Elastic enabled)
 
 ---
 
@@ -244,20 +255,29 @@ Final repository state:
 - **Effect**: IOCs below this score are warned about in PR comment (but not blocked)
 
 ### Per-Publisher Confidence Levels (Deployment)
-- **`MISP_MIN_CONFIDENCE_LEVEL`**: Default `medium` — deploys medium + high IOCs to MISP
-- **`OPENCTI_MIN_CONFIDENCE_LEVEL`**: Default `high` — deploys only high confidence IOCs to OpenCTI
+- **`SPLUNK_MIN_CONFIDENCE_LEVEL`**: Default `low` — hunts all IOCs in Splunk
+- **`ELASTIC_MIN_CONFIDENCE_LEVEL`**: Default `low` — hunts all IOCs in Elasticsearch
 - **Valid values**: `low`, `medium`, `high`
 - **Levels**: LOW (0-29), MEDIUM (30-69), HIGH (70-100)
+
+### Age-Based IOC Selection
+- **`MAX_IOC_AGE_DAYS`**: Default `30` — only hunt IOCs added within this window
+- **Effect**: IOCs older than this are skipped in Phase 2 (still in master CSV)
 
 ### Override Threshold
 - **Input**: `override_threshold` (PR workflow_dispatch only)
 - **Default**: false
 - **Effect**: When true, suppresses below-threshold warnings
 
-### Publisher Options
-- `MISP_DISTRIBUTION` - Event sharing level (0-3)
-- `MISP_AUTO_PUBLISH` - Auto-publish events (true/false)
-- `MISP_VERIFY_SSL` - Verify TLS cert (true/false)
+### Modular Source/Publisher Selection
+- **`ENRICHMENT_SOURCES`**: Comma-separated list (default: `virustotal,abuseipdb,otx`)
+- **`PUBLISHERS`**: Comma-separated list (default: `splunk,elastic`)
+- API keys/URLs only required for enabled sources/publishers
+
+### Hunter Options
+- `SPLUNK_INDEX` - Index to search (default: `main`)
+- `ELASTIC_INDEX` - Index pattern to search (default: `*`)
+- `ELASTIC_VERIFY_SSL` - Verify TLS cert (default: `true`)
 
 ### Scoring Weights
 - `WEIGHT_VT` (default: 0.45)
@@ -288,15 +308,15 @@ Final repository state:
 - **Below threshold**: Warning issued, IOCs still recorded (pipeline does not fail)
 
 ### Deployment (Merge)
-- **MISP failure**: Non-fatal, warning logged, pipeline continues with OpenCTI
-- **OpenCTI failure**: Non-fatal, warning logged, pipeline continues
-- **Both publishers fail**: Warning embedded in commit message, IOCs remain as `pending` in CSV
-- **Publisher errors**: Logged via `::warning::` annotations, captured in `deploy_warnings.txt` (transient file, not committed)
+- **Splunk failure**: Non-fatal, warning logged, pipeline continues with Elastic
+- **Elastic failure**: Non-fatal, warning logged, pipeline continues
+- **Both hunters fail**: Warning embedded in commit message, IOCs remain with empty `last_hunted_date`
+- **Hunter errors**: Logged via `::warning::` annotations in workflow run
 
 ### Automatic Recovery
 - **Re-enrichment on deploy**: Avoids stale data
-- **Retry logic**: 3 attempts for MISP/OpenCTI with exponential backoff
-- **Idempotent operations**: Safe to re-run
+- **Retry logic**: 3 attempts for enrichment clients with exponential backoff
+- **Idempotent operations**: Safe to re-run; `last_hunted_date` updated on success
 
 ---
 
@@ -305,9 +325,9 @@ Final repository state:
 Every IOC in the master inventory includes:
 
 1. **What**: IOC type and value
-2. **Score**: Confidence from enrichment
-3. **Action**: Deployed or not (and where)
-4. **When**: Timestamp of processing
+2. **Score**: Confidence from enrichment (score + level)
+3. **When added**: Timestamp of inventory processing
+4. **When hunted**: Timestamp of last hunt run (`last_hunted_date`)
 5. **Who**: Commit SHA linking to PR/author
 
 This provides complete traceability for compliance and incident response.
@@ -330,6 +350,6 @@ This provides complete traceability for compliance and incident response.
 
 ### For Administrators
 1. **Rotate API keys**: Regular rotation (quarterly recommended)
-2. **Monitor rate limits**: Upgrade API tiers if hitting limits
+2. **Monitor rate limits**: Upgrade API tiers if hitting enrichment limits
 3. **Backup master CSV**: Part of repo, but consider external backup
-4. **Review MISP/OpenCTI events**: Ensure proper distribution settings
+4. **Review hunt results**: Check workflow logs after each deploy for hit counts

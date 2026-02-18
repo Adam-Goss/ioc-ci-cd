@@ -35,36 +35,42 @@ class TestValidateConfidenceLevel:
 class TestLoadConfig:
     """Tests for load_config function."""
 
-    def test_default_confidence_levels(self, monkeypatch):
-        """Test config loads with default per-publisher confidence levels."""
+    def test_default_sources_and_no_publishers(self, monkeypatch):
+        """Test config loads with default enrichment sources and empty publishers list."""
         monkeypatch.setenv("VT_API_KEY", "test_vt")
         monkeypatch.setenv("ABUSEIPDB_API_KEY", "test_abuse")
         monkeypatch.setenv("OTX_API_KEY", "test_otx")
+        # A single space forces _parse_csv_list to return [] (no publishers needed)
+        monkeypatch.setenv("PUBLISHERS", " ")
 
         config = load_config()
 
-        assert config.misp_min_confidence_level == "medium"
-        assert config.opencti_min_confidence_level == "high"
+        assert config.enrichment_sources == ["virustotal", "abuseipdb", "otx"]
+        assert config.publishers == []
+        assert config.max_ioc_age_days == 30
 
-    def test_custom_confidence_levels(self, monkeypatch):
+    def test_custom_publisher_confidence(self, monkeypatch):
         """Test config loads custom per-publisher confidence levels."""
-        monkeypatch.setenv("VT_API_KEY", "test_vt")
-        monkeypatch.setenv("ABUSEIPDB_API_KEY", "test_abuse")
-        monkeypatch.setenv("OTX_API_KEY", "test_otx")
-        monkeypatch.setenv("MISP_MIN_CONFIDENCE_LEVEL", "low")
-        monkeypatch.setenv("OPENCTI_MIN_CONFIDENCE_LEVEL", "medium")
+        # A single space forces _parse_csv_list to return [] (no API keys needed)
+        monkeypatch.setenv("ENRICHMENT_SOURCES", " ")
+        monkeypatch.setenv("PUBLISHERS", "splunk")
+        monkeypatch.setenv("SPLUNK_URL", "https://splunk.example.com")
+        monkeypatch.setenv("SPLUNK_TOKEN", "test-token")
+        monkeypatch.setenv("SPLUNK_MIN_CONFIDENCE_LEVEL", "high")
 
         config = load_config()
 
-        assert config.misp_min_confidence_level == "low"
-        assert config.opencti_min_confidence_level == "medium"
+        assert config.publisher_min_confidence["splunk"] == "high"
+        assert config.splunk_url == "https://splunk.example.com"
+        assert config.splunk_token == "test-token"
 
     def test_invalid_confidence_level_raises(self, monkeypatch):
         """Test that invalid confidence level in env var raises ValueError."""
-        monkeypatch.setenv("VT_API_KEY", "test_vt")
-        monkeypatch.setenv("ABUSEIPDB_API_KEY", "test_abuse")
-        monkeypatch.setenv("OTX_API_KEY", "test_otx")
-        monkeypatch.setenv("MISP_MIN_CONFIDENCE_LEVEL", "invalid")
+        monkeypatch.setenv("ENRICHMENT_SOURCES", " ")
+        monkeypatch.setenv("PUBLISHERS", "splunk")
+        monkeypatch.setenv("SPLUNK_URL", "https://splunk.example.com")
+        monkeypatch.setenv("SPLUNK_TOKEN", "test-token")
+        monkeypatch.setenv("SPLUNK_MIN_CONFIDENCE_LEVEL", "invalid")
 
         with pytest.raises(ValueError, match="Invalid"):
             load_config()

@@ -28,27 +28,30 @@ class TestEnrichIOC:
         mock_abuse_score = SourceScore("abuseipdb", 90.0, available=True)
         mock_otx_score = SourceScore("otx", 70.0, available=True)
 
-        with patch("src.enrichment.aggregator.VirusTotalClient") as mock_vt_class, \
-             patch("src.enrichment.aggregator.AbuseIPDBClient") as mock_abuse_class, \
-             patch("src.enrichment.aggregator.OTXClient") as mock_otx_class, \
-             patch("src.enrichment.aggregator.TokenBucketRateLimiter"):
+        mock_vt_class = MagicMock()
+        mock_vt = AsyncMock()
+        mock_vt.enrich.return_value = mock_vt_score
+        mock_vt.close = AsyncMock()
+        mock_vt_class.return_value = mock_vt
 
-            mock_vt = AsyncMock()
-            mock_vt.enrich.return_value = mock_vt_score
-            mock_vt.close = AsyncMock()
-            mock_vt_class.return_value = mock_vt
+        mock_abuse_class = MagicMock()
+        mock_abuse = AsyncMock()
+        mock_abuse.enrich.return_value = mock_abuse_score
+        mock_abuse.close = AsyncMock()
+        mock_abuse_class.return_value = mock_abuse
 
-            mock_abuse = AsyncMock()
-            mock_abuse.enrich.return_value = mock_abuse_score
-            mock_abuse.close = AsyncMock()
-            mock_abuse_class.return_value = mock_abuse
+        mock_otx_class = MagicMock()
+        mock_otx = AsyncMock()
+        mock_otx.enrich.return_value = mock_otx_score
+        mock_otx_class.return_value = mock_otx
 
-            mock_otx = AsyncMock()
-            mock_otx.enrich.return_value = mock_otx_score
-            mock_otx_class.return_value = mock_otx
+        from src.enrichment.aggregator import enrich_ioc
 
-            from src.enrichment.aggregator import enrich_ioc
-
+        with patch.dict("src.enrichment.aggregator.ENRICHMENT_REGISTRY", {
+            "virustotal": mock_vt_class,
+            "abuseipdb": mock_abuse_class,
+            "otx": mock_otx_class,
+        }):
             result = await enrich_ioc(ioc, config)
 
         assert result.ioc == ioc
@@ -74,27 +77,30 @@ class TestEnrichIOC:
         mock_abuse_score = SourceScore("abuseipdb", 0.0, available=False, error="Not supported")
         mock_otx_score = SourceScore("otx", 70.0, available=True)
 
-        with patch("src.enrichment.aggregator.VirusTotalClient") as mock_vt_class, \
-             patch("src.enrichment.aggregator.AbuseIPDBClient") as mock_abuse_class, \
-             patch("src.enrichment.aggregator.OTXClient") as mock_otx_class, \
-             patch("src.enrichment.aggregator.TokenBucketRateLimiter"):
+        mock_vt_class = MagicMock()
+        mock_vt = AsyncMock()
+        mock_vt.enrich.return_value = mock_vt_score
+        mock_vt.close = AsyncMock()
+        mock_vt_class.return_value = mock_vt
 
-            mock_vt = AsyncMock()
-            mock_vt.enrich.return_value = mock_vt_score
-            mock_vt.close = AsyncMock()
-            mock_vt_class.return_value = mock_vt
+        mock_abuse_class = MagicMock()
+        mock_abuse = AsyncMock()
+        mock_abuse.enrich.return_value = mock_abuse_score
+        mock_abuse.close = AsyncMock()
+        mock_abuse_class.return_value = mock_abuse
 
-            mock_abuse = AsyncMock()
-            mock_abuse.enrich.return_value = mock_abuse_score
-            mock_abuse.close = AsyncMock()
-            mock_abuse_class.return_value = mock_abuse
+        mock_otx_class = MagicMock()
+        mock_otx = AsyncMock()
+        mock_otx.enrich.return_value = mock_otx_score
+        mock_otx_class.return_value = mock_otx
 
-            mock_otx = AsyncMock()
-            mock_otx.enrich.return_value = mock_otx_score
-            mock_otx_class.return_value = mock_otx
+        from src.enrichment.aggregator import enrich_ioc
 
-            from src.enrichment.aggregator import enrich_ioc
-
+        with patch.dict("src.enrichment.aggregator.ENRICHMENT_REGISTRY", {
+            "virustotal": mock_vt_class,
+            "abuseipdb": mock_abuse_class,
+            "otx": mock_otx_class,
+        }):
             result = await enrich_ioc(ioc, config)
 
         # Should still have 3 scores (one unavailable)
@@ -108,31 +114,34 @@ class TestEnrichIOC:
         config = self._make_config()
         ioc = IOC(IOCType.IP, "192.168.1.1", "192.168.1.1", 1)
 
-        with patch("src.enrichment.aggregator.VirusTotalClient") as mock_vt_class, \
-             patch("src.enrichment.aggregator.AbuseIPDBClient") as mock_abuse_class, \
-             patch("src.enrichment.aggregator.OTXClient") as mock_otx_class, \
-             patch("src.enrichment.aggregator.TokenBucketRateLimiter"):
+        mock_vt_class = MagicMock()
+        mock_vt = AsyncMock()
+        mock_vt.enrich.side_effect = Exception("VT exploded")
+        mock_vt.close = AsyncMock()
+        mock_vt_class.return_value = mock_vt
 
-            mock_vt = AsyncMock()
-            mock_vt.enrich.side_effect = Exception("VT exploded")
-            mock_vt.close = AsyncMock()
-            mock_vt_class.return_value = mock_vt
+        mock_abuse_class = MagicMock()
+        mock_abuse = AsyncMock()
+        mock_abuse.close = AsyncMock()
+        mock_abuse_class.return_value = mock_abuse
 
-            mock_abuse = AsyncMock()
-            mock_abuse.close = AsyncMock()
-            mock_abuse_class.return_value = mock_abuse
+        mock_otx_class = MagicMock()
+        mock_otx = AsyncMock()
+        mock_otx_class.return_value = mock_otx
 
-            mock_otx = AsyncMock()
-            mock_otx_class.return_value = mock_otx
+        from src.enrichment.aggregator import enrich_ioc
 
-            from src.enrichment.aggregator import enrich_ioc
-
+        with patch.dict("src.enrichment.aggregator.ENRICHMENT_REGISTRY", {
+            "virustotal": mock_vt_class,
+            "abuseipdb": mock_abuse_class,
+            "otx": mock_otx_class,
+        }):
             with pytest.raises(Exception):
                 await enrich_ioc(ioc, config)
 
-            # Clients should still be cleaned up
-            mock_vt.close.assert_called_once()
-            mock_abuse.close.assert_called_once()
+        # Clients should still be cleaned up
+        mock_vt.close.assert_called_once()
+        mock_abuse.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_enrich_ioc_with_custom_rate_limits(self):

@@ -102,3 +102,18 @@ class ValidationReport:
     enrichment_results: list[EnrichmentResult]
     threshold: float
     override: bool
+
+
+@dataclass
+class HuntResult:
+    """Result of hunting for an IOC in a security platform."""
+
+    ioc: IOC
+    platform: str
+    hits_found: int
+    earliest_hit: Optional[str] = None
+    latest_hit: Optional[str] = None
+    sample_events: list[dict] = field(default_factory=list)
+    query_used: str = ""
+    error: Optional[str] = None
+    success: bool = True
