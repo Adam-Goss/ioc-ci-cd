@@ -1,22 +1,31 @@
-"""Base class for IOC publishers."""
+"""Base class for IOC hunting publishers."""
 
 from abc import ABC, abstractmethod
 
-from src.models import EnrichmentResult
+from src.models import EnrichmentResult, HuntResult
 
 
-class Publisher(ABC):
-    """Base class for all IOC publishers."""
+class HuntPublisher(ABC):
+    """Base class for all IOC hunting publishers.
+
+    Hunting publishers search for IOCs in security platform log data
+    (e.g. Splunk, Elastic) rather than pushing IOCs to TI platforms.
+    """
 
     @abstractmethod
-    async def publish(self, results: list[EnrichmentResult]) -> None:
+    async def hunt(self, results: list[EnrichmentResult]) -> list[HuntResult]:
         """
-        Publish enrichment results to the downstream platform.
+        Search for IOCs in the target platform's log data.
 
         Args:
-            results: List of enrichment results to publish
+            results: List of enrichment results to hunt for.
 
-        Raises:
-            Exception: If publishing fails (should be fatal for deployment)
+        Returns:
+            List of HuntResult, one per IOC.
         """
+        ...
+
+    @abstractmethod
+    def name(self) -> str:
+        """Return the platform name (e.g. 'splunk', 'elastic')."""
         ...

@@ -7,9 +7,6 @@ dependencies = [
     "validators>=0.22",
     "vt-py>=0.18",
     "OTXv2>=1.5.12",
-    "pymisp>=2.5.17",
-    "pycti>=6.0.0",
-    "stix2>=3.0",
     "aiohttp>=3.9",
     "requests>=2.31",
 ]

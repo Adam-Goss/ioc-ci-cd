@@ -6,12 +6,20 @@ from collections import Counter
 
 from src.config import PipelineConfig
 from src.enrichment.abuseipdb import AbuseIPDBClient
+from src.enrichment.base import TIEnrichmentClient
 from src.enrichment.otx import OTXClient
 from src.enrichment.virustotal import VirusTotalClient
 from src.models import EnrichmentResult, IOC, SourceScore
-from src.rate_limiter import RATE_LIMITS, TokenBucketRateLimiter
+from src.rate_limiter import RATE_LIMITS, RateLimiterConfig, TokenBucketRateLimiter
 
 logger = logging.getLogger("ioc_pipeline.aggregator")
+
+# Registry of available enrichment clients
+ENRICHMENT_REGISTRY: dict[str, type[TIEnrichmentClient]] = {
+    "virustotal": VirusTotalClient,
+    "abuseipdb": AbuseIPDBClient,
+    "otx": OTXClient,
+}
 
 
 def compute_confidence(scores: list[SourceScore], config: PipelineConfig) -> float:
@@ -85,64 +93,65 @@ def extract_tags(scores: list[SourceScore]) -> list[str]:
     return sorted(set(primary_tags))
 
 
-async def enrich_ioc(ioc: IOC, config: PipelineConfig) -> EnrichmentResult:
+def _make_limiter(source: str, config: PipelineConfig) -> TokenBucketRateLimiter:
+    """Build a rate limiter for the given source, using config overrides if set."""
+    base = RATE_LIMITS[source]
+    rate_override = getattr(config, f"{source}_rate_limit", None)
+    if rate_override is not None:
+        cfg = RateLimiterConfig(
+            requests_per_minute=rate_override,
+            daily_budget=base.daily_budget,
+            name=source,
+        )
+    else:
+        cfg = base
+    return TokenBucketRateLimiter(cfg)
+
+
+def _get_api_key(source: str, config: PipelineConfig) -> str:
+    """Retrieve the API key for the given source from config."""
+    key_field = {"virustotal": "vt_api_key", "abuseipdb": "abuseipdb_api_key", "otx": "otx_api_key"}
+    return getattr(config, key_field[source], "") or ""
+
+
+async def enrich_ioc(
+    ioc: IOC,
+    config: PipelineConfig,
+    enabled_sources: list[str] | None = None,
+) -> EnrichmentResult:
     """
-    Enrich a single IOC against all TI sources.
+    Enrich a single IOC against the enabled TI sources.
 
     Args:
         ioc: The IOC to enrich
         config: Pipeline configuration
+        enabled_sources: Which sources to use (None = use config.enrichment_sources)
 
     Returns:
         Aggregated enrichment result
     """
-    # Create rate limiters
-    vt_limiter = TokenBucketRateLimiter(
-        RATE_LIMITS["virustotal"]
-        if config.vt_rate_limit is None
-        else RATE_LIMITS["virustotal"].__class__(
-            requests_per_minute=config.vt_rate_limit,
-            daily_budget=RATE_LIMITS["virustotal"].daily_budget,
-            name="virustotal",
-        )
-    )
+    sources = enabled_sources if enabled_sources is not None else config.enrichment_sources
 
-    abuseipdb_limiter = TokenBucketRateLimiter(
-        RATE_LIMITS["abuseipdb"]
-        if config.abuseipdb_rate_limit is None
-        else RATE_LIMITS["abuseipdb"].__class__(
-            requests_per_minute=config.abuseipdb_rate_limit,
-            daily_budget=RATE_LIMITS["abuseipdb"].daily_budget,
-            name="abuseipdb",
-        )
-    )
-
-    otx_limiter = TokenBucketRateLimiter(
-        RATE_LIMITS["otx"]
-        if config.otx_rate_limit is None
-        else RATE_LIMITS["otx"].__class__(
-            requests_per_minute=config.otx_rate_limit,
-            daily_budget=RATE_LIMITS["otx"].daily_budget,
-            name="otx",
-        )
-    )
-
-    # Create clients
-    vt_client = VirusTotalClient(config.vt_api_key, vt_limiter)
-    abuseipdb_client = AbuseIPDBClient(config.abuseipdb_api_key, abuseipdb_limiter)
-    otx_client = OTXClient(config.otx_api_key, otx_limiter)
+    # Build clients for enabled sources only
+    clients: list[TIEnrichmentClient] = []
+    for source in sources:
+        client_class = ENRICHMENT_REGISTRY.get(source)
+        if client_class is None:
+            logger.warning(f"Unknown enrichment source: {source!r}, skipping")
+            continue
+        limiter = _make_limiter(source, config)
+        api_key = _get_api_key(source, config)
+        clients.append(client_class(api_key, limiter))
 
     try:
-        # Enrich concurrently across all sources
-        scores = await asyncio.gather(
-            vt_client.enrich(ioc), abuseipdb_client.enrich(ioc), otx_client.enrich(ioc)
-        )
+        # Enrich concurrently across all enabled sources
+        scores = await asyncio.gather(*[c.enrich(ioc) for c in clients])
 
         # Compute aggregated confidence
-        confidence = compute_confidence(scores, config)
+        confidence = compute_confidence(list(scores), config)
 
         # Extract tags
-        tags = extract_tags(scores)
+        tags = extract_tags(list(scores))
 
         result = EnrichmentResult(
             ioc=ioc, scores=list(scores), confidence=confidence, tags=tags
@@ -155,26 +164,33 @@ async def enrich_ioc(ioc: IOC, config: PipelineConfig) -> EnrichmentResult:
         return result
 
     finally:
-        # Clean up clients
-        await vt_client.close()
-        await abuseipdb_client.close()
+        # Clean up clients that have a close method
+        for client in clients:
+            if hasattr(client, "close"):
+                await client.close()
 
 
-async def enrich_all(iocs: list[IOC], config: PipelineConfig) -> list[EnrichmentResult]:
+async def enrich_all(
+    iocs: list[IOC],
+    config: PipelineConfig,
+    enabled_sources: list[str] | None = None,
+) -> list[EnrichmentResult]:
     """
     Enrich all IOCs concurrently.
 
     Args:
         iocs: List of IOCs to enrich
         config: Pipeline configuration
+        enabled_sources: Which sources to use (None = use config.enrichment_sources)
 
     Returns:
         List of enrichment results
     """
     logger.info(f"Enriching {len(iocs)} IOCs...")
 
-    # Enrich all IOCs concurrently
-    results = await asyncio.gather(*[enrich_ioc(ioc, config) for ioc in iocs])
+    results = await asyncio.gather(
+        *[enrich_ioc(ioc, config, enabled_sources) for ioc in iocs]
+    )
 
     logger.info(f"Enrichment complete. {len(results)} results.")
 

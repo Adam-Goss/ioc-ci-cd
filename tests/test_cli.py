@@ -3,6 +3,7 @@
 import argparse
 import csv
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,11 +15,11 @@ from src.cli import (
     filter_by_publisher_confidence,
     inventory_command,
     publish_command,
-    read_pending_iocs_from_csv,
-    update_csv_deployment_status,
+    read_iocs_by_age,
+    update_csv_last_hunted,
     validate_command,
 )
-from src.models import EnrichmentResult, IOC, IOCType, ValidationReport
+from src.models import EnrichmentResult, HuntResult, IOC, IOCType, ValidationReport
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ def _write_master_csv(path, rows, header=None):
     if header is None:
         header = [
             "ioc_type", "ioc_value", "confidence_score", "confidence_level",
-            "status", "deployed_to", "added_date", "commit_sha",
+            "added_date", "last_hunted_date", "commit_sha",
         ]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -49,6 +50,16 @@ def _read_master_csv(path):
     """Read master CSV and return list of dicts."""
     with open(path, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def _recent_date(days_ago=1):
+    """Return a timestamp string for N days ago."""
+    return (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _old_date(days_ago=60):
+    """Return a timestamp string for N days ago (default: old enough to be stale)."""
+    return (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +112,7 @@ class TestAppendToMasterInventory:
     """Tests for appending to master inventory CSV."""
 
     def test_append_to_new_file(self, tmp_path, monkeypatch):
-        """Test creating new master inventory CSV with header and new columns."""
+        """Test creating new master inventory CSV with new schema."""
         master_csv = tmp_path / "master-indicators.csv"
         monkeypatch.setenv("GITHUB_SHA", "abc123def456789")
 
@@ -115,57 +126,31 @@ class TestAppendToMasterInventory:
         assert row["ioc_value"] == "192.168.1.1"
         assert row["confidence_score"] == "85.00"
         assert row["confidence_level"] == "high"
-        assert row["status"] == "pending"
-        assert row["deployed_to"] == "N/A"
         assert row["commit_sha"] == "abc123de"
+        # No status/deployed_to columns
+        assert "status" not in row
+        assert "deployed_to" not in row
+        # New columns present
+        assert "added_date" in row
+        assert row["last_hunted_date"] == ""
 
-    def test_append_confidence_levels(self, tmp_path):
-        """Test that confidence levels are correctly assigned."""
+    def test_append_below_threshold_no_status(self, tmp_path):
+        """Test that appended IOCs have no status/deployed_to columns."""
         master_csv = tmp_path / "master-indicators.csv"
-
-        results = [
-            _make_result(IOCType.IP, "10.0.0.1", 15.0, 1),    # low
-            _make_result(IOCType.IP, "10.0.0.2", 29.9, 2),    # low
-            _make_result(IOCType.IP, "10.0.0.3", 30.0, 3),    # medium
-            _make_result(IOCType.IP, "10.0.0.4", 69.9, 4),    # medium
-            _make_result(IOCType.IP, "10.0.0.5", 70.0, 5),    # high
-            _make_result(IOCType.IP, "10.0.0.6", 100.0, 6),   # high
-        ]
-
-        append_to_master_inventory(results, master_csv_path=str(master_csv))
+        result = _make_result(IOCType.IP, "10.0.0.1", 15.0)
+        append_to_master_inventory([result], master_csv_path=str(master_csv))
 
         rows = _read_master_csv(master_csv)
-        assert len(rows) == 6
-        assert rows[0]["confidence_level"] == "low"
-        assert rows[1]["confidence_level"] == "low"
-        assert rows[2]["confidence_level"] == "medium"
-        assert rows[3]["confidence_level"] == "medium"
-        assert rows[4]["confidence_level"] == "high"
-        assert rows[5]["confidence_level"] == "high"
-
-    def test_append_all_have_pending_status(self, tmp_path):
-        """Test that all appended IOCs have pending status and N/A deployed_to."""
-        master_csv = tmp_path / "master-indicators.csv"
-
-        results = [
-            _make_result(IOCType.IP, "10.0.0.1", 85.0),
-            _make_result(IOCType.DOMAIN, "evil.com", 45.0),
-            _make_result(IOCType.URL, "http://bad.com", 10.0),
-        ]
-
-        append_to_master_inventory(results, master_csv_path=str(master_csv))
-
-        rows = _read_master_csv(master_csv)
-        for row in rows:
-            assert row["status"] == "pending"
-            assert row["deployed_to"] == "N/A"
+        assert len(rows) == 1
+        assert "status" not in rows[0]
+        assert "deployed_to" not in rows[0]
 
     def test_append_to_existing_file(self, tmp_path):
         """Test appending to existing master inventory CSV."""
         master_csv = tmp_path / "master-indicators.csv"
 
         _write_master_csv(master_csv, [
-            ["domain", "evil.com", "90.00", "high", "deployed", "MISP,OpenCTI", "2024-01-01 12:00:00", "old123"],
+            ["domain", "evil.com", "90.00", "high", "2024-01-01 12:00:00", "", "old123"],
         ])
 
         result = _make_result(IOCType.IP, "192.168.1.1", 85.0)
@@ -181,7 +166,7 @@ class TestAppendToMasterInventory:
         master_csv = tmp_path / "master-indicators.csv"
 
         _write_master_csv(master_csv, [
-            ["ip", "192.168.1.1", "80.00", "high", "deployed", "MISP", "2024-01-01", "old123"],
+            ["ip", "192.168.1.1", "80.00", "high", "2024-01-01 12:00:00", "", "old123"],
         ])
 
         result = _make_result(IOCType.IP, "192.168.1.1", 85.0)
@@ -234,63 +219,60 @@ class TestAppendToMasterInventory:
 
 
 # ---------------------------------------------------------------------------
-# TestReadPendingIocsFromCsv
+# TestReadIocsByAge
 # ---------------------------------------------------------------------------
 
-class TestReadPendingIocsFromCsv:
-    """Tests for reading pending IOCs from master CSV."""
+class TestReadIocsByAge:
+    """Tests for reading IOCs from master CSV by age."""
 
-    def test_read_pending_only(self, tmp_path):
-        """Test that only pending rows are returned."""
+    def test_read_within_window(self, tmp_path):
+        """Test that IOCs within the age window are returned."""
         master_csv = tmp_path / "master.csv"
         _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "deployed", "MISP", "2024-01-01", "aaa"],
-            ["ip", "10.0.0.2", "50.00", "medium", "pending", "N/A", "2024-01-01", "bbb"],
-            ["domain", "evil.com", "75.00", "high", "pending", "N/A", "2024-01-01", "ccc"],
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(1), "", "aaa"],
+            ["ip", "10.0.0.2", "50.00", "medium", _recent_date(5), "", "bbb"],
         ])
 
-        pending = read_pending_iocs_from_csv(str(master_csv))
-        assert len(pending) == 2
-        assert pending[0][0].ioc.value == "10.0.0.2"
-        assert pending[1][0].ioc.value == "evil.com"
+        results = read_iocs_by_age(str(master_csv), max_age_days=30)
+        assert len(results) == 2
+        values = {r.ioc.value for r in results}
+        assert values == {"10.0.0.1", "10.0.0.2"}
+
+    def test_read_excludes_old_iocs(self, tmp_path):
+        """Test that IOCs older than max_age_days are excluded."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(5), "", "aaa"],
+            ["ip", "10.0.0.2", "50.00", "medium", _old_date(60), "", "bbb"],
+        ])
+
+        results = read_iocs_by_age(str(master_csv), max_age_days=30)
+        assert len(results) == 1
+        assert results[0].ioc.value == "10.0.0.1"
 
     def test_read_empty_csv(self, tmp_path):
         """Test reading from CSV with only header."""
         master_csv = tmp_path / "master.csv"
         _write_master_csv(master_csv, [])
 
-        pending = read_pending_iocs_from_csv(str(master_csv))
-        assert len(pending) == 0
+        results = read_iocs_by_age(str(master_csv))
+        assert results == []
 
     def test_read_nonexistent_csv(self, tmp_path):
-        """Test reading from nonexistent CSV."""
-        pending = read_pending_iocs_from_csv(str(tmp_path / "nope.csv"))
-        assert len(pending) == 0
-
-    def test_read_preserves_row_indices(self, tmp_path):
-        """Test that row indices are correctly tracked."""
-        master_csv = tmp_path / "master.csv"
-        _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "deployed", "MISP", "2024-01-01", "aaa"],
-            ["ip", "10.0.0.2", "50.00", "medium", "pending", "N/A", "2024-01-01", "bbb"],
-            ["domain", "evil.com", "75.00", "high", "pending", "N/A", "2024-01-01", "ccc"],
-        ])
-
-        pending = read_pending_iocs_from_csv(str(master_csv))
-        # Header is line 1, data starts at line 2
-        # Row 1 (deployed) = line 2, Row 2 (pending) = line 3, Row 3 (pending) = line 4
-        assert pending[0][1] == 3  # second data row
-        assert pending[1][1] == 4  # third data row
+        """Test reading from nonexistent CSV returns empty list."""
+        results = read_iocs_by_age(str(tmp_path / "nope.csv"))
+        assert results == []
 
     def test_read_reconstructs_enrichment_result(self, tmp_path):
         """Test that EnrichmentResult is properly reconstructed from CSV."""
         master_csv = tmp_path / "master.csv"
         _write_master_csv(master_csv, [
-            ["domain", "evil.com", "72.50", "high", "pending", "N/A", "2024-01-01", "abc"],
+            ["domain", "evil.com", "72.50", "high", _recent_date(1), "", "abc"],
         ])
 
-        pending = read_pending_iocs_from_csv(str(master_csv))
-        result, _ = pending[0]
+        results = read_iocs_by_age(str(master_csv))
+        assert len(results) == 1
+        result = results[0]
         assert result.ioc.ioc_type == IOCType.DOMAIN
         assert result.ioc.value == "evil.com"
         assert result.confidence == 72.50
@@ -298,63 +280,46 @@ class TestReadPendingIocsFromCsv:
 
 
 # ---------------------------------------------------------------------------
-# TestUpdateCsvDeploymentStatus
+# TestUpdateCsvLastHunted
 # ---------------------------------------------------------------------------
 
-class TestUpdateCsvDeploymentStatus:
-    """Tests for updating deployment status in CSV."""
+class TestUpdateCsvLastHunted:
+    """Tests for updating last_hunted_date in master CSV."""
 
-    def test_update_single_row(self, tmp_path):
-        """Test updating a single row's deployment status."""
+    def test_update_hunted_iocs(self, tmp_path):
+        """Test that last_hunted_date is updated for hunted IOCs."""
         master_csv = tmp_path / "master.csv"
         _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(1), "", "aaa"],
+            ["ip", "10.0.0.2", "50.00", "medium", _recent_date(1), "", "bbb"],
         ])
 
-        update_csv_deployment_status(str(master_csv), {2: "MISP,OpenCTI"})
+        update_csv_last_hunted(str(master_csv), {"10.0.0.1"})
 
         rows = _read_master_csv(master_csv)
-        assert rows[0]["deployed_to"] == "MISP,OpenCTI"
-        assert rows[0]["status"] == "deployed"
+        assert rows[0]["last_hunted_date"] != ""
+        assert rows[1]["last_hunted_date"] == ""
 
-    def test_update_multiple_rows(self, tmp_path):
-        """Test updating multiple rows with different statuses."""
+    def test_update_multiple_iocs(self, tmp_path):
+        """Test updating multiple IOCs at once."""
         master_csv = tmp_path / "master.csv"
         _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
-            ["ip", "10.0.0.2", "50.00", "medium", "pending", "N/A", "2024-01-01", "bbb"],
-            ["ip", "10.0.0.3", "15.00", "low", "pending", "N/A", "2024-01-01", "ccc"],
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(1), "", "aaa"],
+            ["ip", "10.0.0.2", "50.00", "medium", _recent_date(1), "", "bbb"],
+            ["domain", "evil.com", "75.00", "high", _recent_date(1), "", "ccc"],
         ])
 
-        update_csv_deployment_status(str(master_csv), {
-            2: "MISP,OpenCTI",
-            3: "MISP",
-            4: "N/A",
-        })
+        update_csv_last_hunted(str(master_csv), {"10.0.0.1", "10.0.0.2"})
 
         rows = _read_master_csv(master_csv)
-        assert rows[0]["deployed_to"] == "MISP,OpenCTI"
-        assert rows[0]["status"] == "deployed"
-        assert rows[1]["deployed_to"] == "MISP"
-        assert rows[1]["status"] == "deployed"
-        assert rows[2]["deployed_to"] == "N/A"
-        assert rows[2]["status"] == "pending"  # N/A keeps pending
+        assert rows[0]["last_hunted_date"] != ""
+        assert rows[1]["last_hunted_date"] != ""
+        assert rows[2]["last_hunted_date"] == ""
 
-    def test_update_preserves_other_rows(self, tmp_path):
-        """Test that updating some rows doesn't affect others."""
-        master_csv = tmp_path / "master.csv"
-        _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "deployed", "MISP", "2024-01-01", "old"],
-            ["ip", "10.0.0.2", "50.00", "medium", "pending", "N/A", "2024-01-01", "new"],
-        ])
-
-        update_csv_deployment_status(str(master_csv), {3: "MISP"})
-
-        rows = _read_master_csv(master_csv)
-        assert rows[0]["status"] == "deployed"  # unchanged
-        assert rows[0]["deployed_to"] == "MISP"  # unchanged
-        assert rows[1]["deployed_to"] == "MISP"  # updated
-        assert rows[1]["status"] == "deployed"  # updated
+    def test_update_nonexistent_csv(self, tmp_path):
+        """Test that updating a nonexistent CSV logs error but doesn't raise."""
+        # Should not raise
+        update_csv_last_hunted(str(tmp_path / "nope.csv"), {"10.0.0.1"})
 
 
 # ---------------------------------------------------------------------------
@@ -367,9 +332,9 @@ class TestFilterByPublisherConfidence:
     def test_filter_high_only(self):
         """Test filtering for high confidence only."""
         results = [
-            _make_result(IOCType.IP, "10.0.0.1", 15.0),   # low
-            _make_result(IOCType.IP, "10.0.0.2", 50.0),   # medium
-            _make_result(IOCType.IP, "10.0.0.3", 85.0),   # high
+            _make_result(IOCType.IP, "10.0.0.1", 15.0),
+            _make_result(IOCType.IP, "10.0.0.2", 50.0),
+            _make_result(IOCType.IP, "10.0.0.3", 85.0),
         ]
 
         filtered = filter_by_publisher_confidence(results, "high")
@@ -379,9 +344,9 @@ class TestFilterByPublisherConfidence:
     def test_filter_medium_and_above(self):
         """Test filtering for medium and above."""
         results = [
-            _make_result(IOCType.IP, "10.0.0.1", 15.0),   # low
-            _make_result(IOCType.IP, "10.0.0.2", 50.0),   # medium
-            _make_result(IOCType.IP, "10.0.0.3", 85.0),   # high
+            _make_result(IOCType.IP, "10.0.0.1", 15.0),
+            _make_result(IOCType.IP, "10.0.0.2", 50.0),
+            _make_result(IOCType.IP, "10.0.0.3", 85.0),
         ]
 
         filtered = filter_by_publisher_confidence(results, "medium")
@@ -392,9 +357,9 @@ class TestFilterByPublisherConfidence:
     def test_filter_low_returns_all(self):
         """Test filtering for low returns everything."""
         results = [
-            _make_result(IOCType.IP, "10.0.0.1", 15.0),   # low
-            _make_result(IOCType.IP, "10.0.0.2", 50.0),   # medium
-            _make_result(IOCType.IP, "10.0.0.3", 85.0),   # high
+            _make_result(IOCType.IP, "10.0.0.1", 15.0),
+            _make_result(IOCType.IP, "10.0.0.2", 50.0),
+            _make_result(IOCType.IP, "10.0.0.3", 85.0),
         ]
 
         filtered = filter_by_publisher_confidence(results, "low")
@@ -403,10 +368,10 @@ class TestFilterByPublisherConfidence:
     def test_filter_boundary_values(self):
         """Test filtering at exact boundary values."""
         results = [
-            _make_result(IOCType.IP, "10.0.0.1", 29.9),   # low
-            _make_result(IOCType.IP, "10.0.0.2", 30.0),   # medium
-            _make_result(IOCType.IP, "10.0.0.3", 69.9),   # medium
-            _make_result(IOCType.IP, "10.0.0.4", 70.0),   # high
+            _make_result(IOCType.IP, "10.0.0.1", 29.9),
+            _make_result(IOCType.IP, "10.0.0.2", 30.0),
+            _make_result(IOCType.IP, "10.0.0.3", 69.9),
+            _make_result(IOCType.IP, "10.0.0.4", 70.0),
         ]
 
         medium_up = filter_by_publisher_confidence(results, "medium")
@@ -430,7 +395,7 @@ class TestValidateCommand:
 
     @pytest.mark.asyncio
     async def test_validate_success(self, tmp_path, valid_ioc_file):
-        """Test successful validation with no malformed IOCs."""
+        """Test successful validation."""
         args = argparse.Namespace(
             ioc_file=valid_ioc_file,
             threshold=70.0,
@@ -439,11 +404,11 @@ class TestValidateCommand:
 
         with patch("src.cli.load_config") as mock_config, \
              patch("src.cli.enrich_all") as mock_enrich, \
-             patch("src.cli.format_report") as mock_format, \
+             patch("src.cli.format_report"), \
              patch("src.cli.write_report") as mock_write, \
              patch("src.cli.set_github_outputs") as mock_outputs:
 
-            mock_config.return_value = MagicMock()
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
             mock_enrich.return_value = []
 
             exit_code = await validate_command(args)
@@ -468,7 +433,7 @@ class TestValidateCommand:
 
     @pytest.mark.asyncio
     async def test_validate_with_malformed_iocs(self, tmp_path):
-        """Test validation with malformed IOCs returns exit code 0."""
+        """Test validation with malformed IOCs returns exit code 0 (outputs drive failure)."""
         ioc_file = tmp_path / "bad_iocs.txt"
         ioc_file.write_text("999.999.999.999\n")
 
@@ -484,10 +449,11 @@ class TestValidateCommand:
              patch("src.cli.write_report"), \
              patch("src.cli.set_github_outputs"):
 
-            mock_config.return_value = MagicMock()
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
             mock_enrich.return_value = []
 
             exit_code = await validate_command(args)
+            # Returns 0; workflow uses outputs to fail the check
             assert exit_code == 0
 
     @pytest.mark.asyncio
@@ -508,7 +474,7 @@ class TestValidateCommand:
              patch("src.cli.write_report"), \
              patch("src.cli.set_github_outputs"):
 
-            mock_config.return_value = MagicMock()
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
 
             exit_code = await validate_command(args)
             mock_enrich.assert_not_called()
@@ -524,7 +490,7 @@ class TestInventoryCommand:
 
     @pytest.mark.asyncio
     async def test_inventory_success(self, valid_ioc_file, tmp_path):
-        """Test successful inventory adds IOCs as pending."""
+        """Test successful inventory adds IOCs to CSV."""
         master_csv = tmp_path / "master-indicators.csv"
 
         args = argparse.Namespace(
@@ -537,7 +503,7 @@ class TestInventoryCommand:
         with patch("src.cli.load_config") as mock_config, \
              patch("src.cli.enrich_all") as mock_enrich:
 
-            mock_config.return_value = MagicMock()
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
             mock_enrich.return_value = [result]
 
             exit_code = await inventory_command(args)
@@ -547,8 +513,7 @@ class TestInventoryCommand:
 
             rows = _read_master_csv(master_csv)
             assert len(rows) == 1
-            assert rows[0]["status"] == "pending"
-            assert rows[0]["deployed_to"] == "N/A"
+            assert rows[0]["ioc_value"] == "192.168.1.1"
 
     @pytest.mark.asyncio
     async def test_inventory_file_not_found(self):
@@ -574,9 +539,8 @@ class TestInventoryCommand:
         )
 
         with patch("src.cli.load_config") as mock_config:
-            mock_config.return_value = MagicMock()
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
             exit_code = await inventory_command(args)
-            # No valid IOCs, but doesn't fail — just nothing to inventory
             assert exit_code == 0
 
     @pytest.mark.asyncio
@@ -596,13 +560,12 @@ class TestInventoryCommand:
         with patch("src.cli.load_config") as mock_config, \
              patch("src.cli.enrich_all") as mock_enrich:
 
-            mock_config.return_value = MagicMock()
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
             mock_enrich.return_value = [result]
 
             exit_code = await inventory_command(args)
 
             assert exit_code == 0
-            assert master_csv.exists()
             rows = _read_master_csv(master_csv)
             assert len(rows) == 1
             assert rows[0]["ioc_value"] == "192.168.1.1"
@@ -619,7 +582,7 @@ class TestInventoryCommand:
         )
 
         with patch("src.cli.load_config") as mock_config:
-            mock_config.return_value = MagicMock()
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
             exit_code = await inventory_command(args)
             assert exit_code == 0
 
@@ -629,233 +592,209 @@ class TestInventoryCommand:
 # ---------------------------------------------------------------------------
 
 class TestPublishCommand:
-    """Tests for publish command (reads from CSV, filters per publisher)."""
+    """Tests for publish command (age-based IOC selection, hunting publishers)."""
+
+    def _make_config(self, publishers=None, min_confidence=None):
+        """Helper to build a mock config for publish tests."""
+        mock_config = MagicMock()
+        mock_config.publishers = publishers or ["splunk", "elastic"]
+        mock_config.max_ioc_age_days = 30
+        mock_config.publisher_min_confidence = {
+            p: (min_confidence or "low") for p in (publishers or ["splunk", "elastic"])
+        }
+        return mock_config
 
     @pytest.mark.asyncio
-    async def test_publish_from_csv_success(self, tmp_path):
-        """Test successful publishing from master CSV."""
+    async def test_publish_success(self, tmp_path):
+        """Test successful hunting from master CSV."""
         master_csv = tmp_path / "master.csv"
         _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(1), "", "aaa"],
         ])
 
         args = argparse.Namespace(master_csv=str(master_csv))
+        mock_config = self._make_config()
 
-        mock_config = MagicMock()
-        mock_config.misp_min_confidence_level = "medium"
-        mock_config.opencti_min_confidence_level = "high"
+        mock_hunt_results = [
+            HuntResult(
+                ioc=IOC(IOCType.IP, "10.0.0.1", "10.0.0.1", 1),
+                platform="splunk",
+                hits_found=3,
+            )
+        ]
+
+        mock_splunk_class = MagicMock()
+        mock_splunk = AsyncMock()
+        mock_splunk.hunt.return_value = mock_hunt_results
+        mock_splunk_class.return_value = mock_splunk
+
+        mock_elastic_class = MagicMock()
+        mock_elastic = AsyncMock()
+        mock_elastic.hunt.return_value = []
+        mock_elastic_class.return_value = mock_elastic
 
         with patch("src.cli.load_config", return_value=mock_config), \
-             patch("src.cli.MISPPublisher") as mock_misp_class, \
-             patch("src.cli.OpenCTIPublisher") as mock_opencti_class:
-
-            mock_misp = AsyncMock()
-            mock_misp_class.return_value = mock_misp
-            mock_opencti = AsyncMock()
-            mock_opencti_class.return_value = mock_opencti
+             patch.dict("src.cli.PUBLISHER_REGISTRY", {
+                 "splunk": mock_splunk_class,
+                 "elastic": mock_elastic_class,
+             }):
 
             exit_code = await publish_command(args)
 
             assert exit_code == 0
-            mock_misp.publish.assert_called_once()
-            mock_opencti.publish.assert_called_once()
-
-            # CSV should be updated
-            rows = _read_master_csv(master_csv)
-            assert rows[0]["status"] == "deployed"
-            assert rows[0]["deployed_to"] == "MISP,OpenCTI"
+            mock_splunk.hunt.assert_called_once()
+            mock_elastic.hunt.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_publish_filters_by_publisher_level(self, tmp_path):
-        """Test that each publisher gets only IOCs at its confidence level."""
-        master_csv = tmp_path / "master.csv"
-        _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
-            ["ip", "10.0.0.2", "50.00", "medium", "pending", "N/A", "2024-01-01", "bbb"],
-            ["ip", "10.0.0.3", "15.00", "low", "pending", "N/A", "2024-01-01", "ccc"],
-        ])
-
-        args = argparse.Namespace(master_csv=str(master_csv))
-
-        mock_config = MagicMock()
-        mock_config.misp_min_confidence_level = "medium"
-        mock_config.opencti_min_confidence_level = "high"
-
-        with patch("src.cli.load_config", return_value=mock_config), \
-             patch("src.cli.MISPPublisher") as mock_misp_class, \
-             patch("src.cli.OpenCTIPublisher") as mock_opencti_class:
-
-            mock_misp = AsyncMock()
-            mock_misp_class.return_value = mock_misp
-            mock_opencti = AsyncMock()
-            mock_opencti_class.return_value = mock_opencti
-
-            exit_code = await publish_command(args)
-            assert exit_code == 0
-
-            # MISP should get medium + high (2 IOCs)
-            misp_published = mock_misp.publish.call_args[0][0]
-            assert len(misp_published) == 2
-
-            # OpenCTI should get high only (1 IOC)
-            opencti_published = mock_opencti.publish.call_args[0][0]
-            assert len(opencti_published) == 1
-            assert opencti_published[0].ioc.value == "10.0.0.1"
-
-            # CSV should reflect what was deployed where
-            rows = _read_master_csv(master_csv)
-            assert rows[0]["deployed_to"] == "MISP,OpenCTI"
-            assert rows[0]["status"] == "deployed"
-            assert rows[1]["deployed_to"] == "MISP"
-            assert rows[1]["status"] == "deployed"
-            assert rows[2]["deployed_to"] == "N/A"
-            assert rows[2]["status"] == "pending"
-
-    @pytest.mark.asyncio
-    async def test_publish_no_pending_iocs(self, tmp_path):
-        """Test publish when no pending IOCs exist."""
-        master_csv = tmp_path / "master.csv"
-        _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "deployed", "MISP", "2024-01-01", "aaa"],
-        ])
-
-        args = argparse.Namespace(master_csv=str(master_csv))
-
-        mock_config = MagicMock()
-        mock_config.misp_min_confidence_level = "medium"
-        mock_config.opencti_min_confidence_level = "high"
-
-        with patch("src.cli.load_config", return_value=mock_config):
-            exit_code = await publish_command(args)
-            assert exit_code == 0
-
-    @pytest.mark.asyncio
-    async def test_publish_misp_failure_continues(self, tmp_path):
-        """Test that MISP failure is non-fatal — pipeline continues."""
-        master_csv = tmp_path / "master.csv"
-        _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
-        ])
-
-        args = argparse.Namespace(master_csv=str(master_csv))
-
-        mock_config = MagicMock()
-        mock_config.misp_min_confidence_level = "medium"
-        mock_config.opencti_min_confidence_level = "high"
-
-        with patch("src.cli.load_config", return_value=mock_config), \
-             patch("src.cli.MISPPublisher") as mock_misp_class, \
-             patch("src.cli.OpenCTIPublisher") as mock_opencti_class:
-
-            mock_misp = AsyncMock()
-            mock_misp.publish.side_effect = Exception("MISP connection failed")
-            mock_misp_class.return_value = mock_misp
-
-            mock_opencti = AsyncMock()
-            mock_opencti_class.return_value = mock_opencti
-
-            exit_code = await publish_command(args)
-
-            # Pipeline succeeds despite MISP failure
-            assert exit_code == 0
-
-            # OpenCTI should still have been called
-            mock_opencti.publish.assert_called_once()
-
-            # CSV should show only OpenCTI deployment
-            rows = _read_master_csv(master_csv)
-            assert rows[0]["deployed_to"] == "OpenCTI"
-            assert rows[0]["status"] == "deployed"
-
-    @pytest.mark.asyncio
-    async def test_publish_opencti_failure_continues(self, tmp_path):
-        """Test that OpenCTI failure is non-fatal — pipeline continues."""
-        master_csv = tmp_path / "master.csv"
-        _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
-        ])
-
-        args = argparse.Namespace(master_csv=str(master_csv))
-
-        mock_config = MagicMock()
-        mock_config.misp_min_confidence_level = "medium"
-        mock_config.opencti_min_confidence_level = "high"
-
-        with patch("src.cli.load_config", return_value=mock_config), \
-             patch("src.cli.MISPPublisher") as mock_misp_class, \
-             patch("src.cli.OpenCTIPublisher") as mock_opencti_class:
-
-            mock_misp = AsyncMock()
-            mock_misp_class.return_value = mock_misp
-
-            mock_opencti = AsyncMock()
-            mock_opencti.publish.side_effect = Exception("OpenCTI connection failed")
-            mock_opencti_class.return_value = mock_opencti
-
-            exit_code = await publish_command(args)
-
-            # Pipeline succeeds despite OpenCTI failure
-            assert exit_code == 0
-
-            # MISP should have succeeded
-            mock_misp.publish.assert_called_once()
-
-            # CSV should show only MISP deployment
-            rows = _read_master_csv(master_csv)
-            assert rows[0]["deployed_to"] == "MISP"
-            assert rows[0]["status"] == "deployed"
-
-    @pytest.mark.asyncio
-    async def test_publish_both_fail_writes_warnings(self, tmp_path):
-        """Test that both publishers failing writes a warnings file."""
-        master_csv = tmp_path / "master.csv"
-        _write_master_csv(master_csv, [
-            ["ip", "10.0.0.1", "85.00", "high", "pending", "N/A", "2024-01-01", "aaa"],
-        ])
-
-        args = argparse.Namespace(master_csv=str(master_csv))
-
-        mock_config = MagicMock()
-        mock_config.misp_min_confidence_level = "medium"
-        mock_config.opencti_min_confidence_level = "high"
-
-        with patch("src.cli.load_config", return_value=mock_config), \
-             patch("src.cli.MISPPublisher") as mock_misp_class, \
-             patch("src.cli.OpenCTIPublisher") as mock_opencti_class, \
-             patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):
-
-            mock_misp = AsyncMock()
-            mock_misp.publish.side_effect = Exception("MISP down")
-            mock_misp_class.return_value = mock_misp
-
-            mock_opencti = AsyncMock()
-            mock_opencti.publish.side_effect = Exception("OpenCTI down")
-            mock_opencti_class.return_value = mock_opencti
-
-            exit_code = await publish_command(args)
-
-            # Still succeeds
-            assert exit_code == 0
-
-            # Warnings file should exist with failed platforms
-            warnings_file = tmp_path / "deploy_warnings.txt"
-            assert warnings_file.exists()
-            assert warnings_file.read_text() == "MISP,OpenCTI"
-
-            # CSV should show N/A (nothing deployed)
-            rows = _read_master_csv(master_csv)
-            assert rows[0]["deployed_to"] == "N/A"
-            assert rows[0]["status"] == "pending"
-
-    @pytest.mark.asyncio
-    async def test_publish_nonexistent_csv(self, tmp_path):
-        """Test publish with nonexistent master CSV."""
+    async def test_publish_file_not_found(self, tmp_path):
+        """Test publish with nonexistent master CSV returns success (nothing to hunt)."""
         args = argparse.Namespace(master_csv=str(tmp_path / "nope.csv"))
 
-        mock_config = MagicMock()
-        mock_config.misp_min_confidence_level = "medium"
-        mock_config.opencti_min_confidence_level = "high"
-
-        with patch("src.cli.load_config", return_value=mock_config):
+        with patch("src.cli.load_config", return_value=self._make_config()):
             exit_code = await publish_command(args)
-            assert exit_code == 0  # No pending = success
+            assert exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_publish_rejects_old_iocs(self, tmp_path):
+        """Test that IOCs older than max_age_days are not hunted."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [
+            ["ip", "10.0.0.1", "85.00", "high", _old_date(60), "", "aaa"],
+        ])
+
+        args = argparse.Namespace(master_csv=str(master_csv))
+
+        mock_splunk_class = MagicMock()
+        mock_elastic_class = MagicMock()
+
+        with patch("src.cli.load_config", return_value=self._make_config()), \
+             patch.dict("src.cli.PUBLISHER_REGISTRY", {
+                 "splunk": mock_splunk_class,
+                 "elastic": mock_elastic_class,
+             }):
+
+            exit_code = await publish_command(args)
+
+            # No IOCs in window — hunt is never called
+            assert exit_code == 0
+            mock_splunk_class.assert_not_called()
+            mock_elastic_class.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_publish_empty_file_returns_zero(self, tmp_path):
+        """Test publish with empty CSV returns success."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [])
+
+        args = argparse.Namespace(master_csv=str(master_csv))
+
+        with patch("src.cli.load_config", return_value=self._make_config()):
+            exit_code = await publish_command(args)
+            assert exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_publish_filters_below_threshold(self, tmp_path):
+        """Test that IOCs below publisher min confidence are filtered out."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(1), "", "aaa"],
+            ["ip", "10.0.0.2", "15.00", "low", _recent_date(1), "", "bbb"],
+        ])
+
+        args = argparse.Namespace(master_csv=str(master_csv))
+        mock_config = self._make_config(publishers=["splunk"], min_confidence="medium")
+
+        mock_splunk_class = MagicMock()
+        mock_splunk = AsyncMock()
+        mock_splunk.hunt.return_value = []
+        mock_splunk_class.return_value = mock_splunk
+
+        with patch("src.cli.load_config", return_value=mock_config), \
+             patch.dict("src.cli.PUBLISHER_REGISTRY", {"splunk": mock_splunk_class}):
+
+            exit_code = await publish_command(args)
+
+            assert exit_code == 0
+            # Only the high confidence IOC should be hunted
+            call_args = mock_splunk.hunt.call_args[0][0]
+            assert len(call_args) == 1
+            assert call_args[0].ioc.value == "10.0.0.1"
+
+    @pytest.mark.asyncio
+    async def test_publish_appends_last_hunted_date(self, tmp_path):
+        """Test that last_hunted_date is updated after successful hunt."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(1), "", "aaa"],
+        ])
+
+        args = argparse.Namespace(master_csv=str(master_csv))
+        mock_config = self._make_config(publishers=["splunk"])
+        mock_config.publisher_min_confidence = {"splunk": "low"}
+
+        hunt_result = HuntResult(
+            ioc=IOC(IOCType.IP, "10.0.0.1", "10.0.0.1", 1),
+            platform="splunk",
+            hits_found=1,
+            success=True,
+        )
+
+        mock_splunk_class = MagicMock()
+        mock_splunk = AsyncMock()
+        mock_splunk.hunt.return_value = [hunt_result]
+        mock_splunk_class.return_value = mock_splunk
+
+        with patch("src.cli.load_config", return_value=mock_config), \
+             patch.dict("src.cli.PUBLISHER_REGISTRY", {"splunk": mock_splunk_class}):
+
+            exit_code = await publish_command(args)
+
+            assert exit_code == 0
+            rows = _read_master_csv(master_csv)
+            assert rows[0]["last_hunted_date"] != ""
+
+    @pytest.mark.asyncio
+    async def test_publish_misp_failure_returns_exit_0(self, tmp_path):
+        """Test that hunter failure is non-fatal (returns 0)."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(1), "", "aaa"],
+        ])
+
+        args = argparse.Namespace(master_csv=str(master_csv))
+        mock_config = self._make_config(publishers=["splunk"])
+        mock_config.publisher_min_confidence = {"splunk": "low"}
+
+        mock_splunk_class = MagicMock()
+        mock_splunk = AsyncMock()
+        mock_splunk.hunt.side_effect = Exception("Splunk connection failed")
+        mock_splunk_class.return_value = mock_splunk
+
+        with patch("src.cli.load_config", return_value=mock_config), \
+             patch.dict("src.cli.PUBLISHER_REGISTRY", {"splunk": mock_splunk_class}):
+
+            exit_code = await publish_command(args)
+            assert exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_publish_opencti_failure_returns_exit_0(self, tmp_path):
+        """Test that Elastic hunter failure is non-fatal (returns 0)."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [
+            ["ip", "10.0.0.1", "85.00", "high", _recent_date(1), "", "aaa"],
+        ])
+
+        args = argparse.Namespace(master_csv=str(master_csv))
+        mock_config = self._make_config(publishers=["elastic"])
+        mock_config.publisher_min_confidence = {"elastic": "low"}
+
+        mock_elastic_class = MagicMock()
+        mock_elastic = AsyncMock()
+        mock_elastic.hunt.side_effect = Exception("Elastic connection failed")
+        mock_elastic_class.return_value = mock_elastic
+
+        with patch("src.cli.load_config", return_value=mock_config), \
+             patch.dict("src.cli.PUBLISHER_REGISTRY", {"elastic": mock_elastic_class}):
+
+            exit_code = await publish_command(args)
+            assert exit_code == 0

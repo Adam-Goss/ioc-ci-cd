@@ -5,6 +5,7 @@ import pytest
 from src.models import (
     ConfidenceLevel,
     EnrichmentResult,
+    HuntResult,
     IOC,
     IOCType,
     SourceScore,
@@ -202,3 +203,52 @@ class TestValidationReport:
         assert len(report.malformed_lines) == 1
         assert report.duplicates_removed == 2
         assert report.threshold == 70.0
+
+
+class TestHuntResult:
+    """Tests for HuntResult dataclass."""
+
+    def test_hunt_result_creation(self):
+        """Test HuntResult object creation with hits."""
+        ioc = IOC(IOCType.IP, "1.2.3.4", "1.2.3.4", 1)
+        result = HuntResult(
+            ioc=ioc,
+            platform="splunk",
+            hits_found=42,
+            earliest_hit="2026-01-01T00:00:00Z",
+            latest_hit="2026-02-01T00:00:00Z",
+            query_used='search index=main src_ip="1.2.3.4"',
+        )
+
+        assert result.platform == "splunk"
+        assert result.hits_found == 42
+        assert result.success is True
+        assert result.error is None
+
+    def test_hunt_result_failure(self):
+        """Test HuntResult for a failed search."""
+        ioc = IOC(IOCType.DOMAIN, "evil.com", "evil.com", 1)
+        result = HuntResult(
+            ioc=ioc,
+            platform="elastic",
+            hits_found=0,
+            error="Connection refused",
+            success=False,
+        )
+
+        assert result.success is False
+        assert result.hits_found == 0
+        assert result.error == "Connection refused"
+
+    def test_hunt_result_no_hits(self):
+        """Test HuntResult with zero hits (successful search, nothing found)."""
+        ioc = IOC(IOCType.IP, "10.0.0.1", "10.0.0.1", 1)
+        result = HuntResult(
+            ioc=ioc,
+            platform="splunk",
+            hits_found=0,
+        )
+
+        assert result.hits_found == 0
+        assert result.success is True
+        assert result.sample_events == []

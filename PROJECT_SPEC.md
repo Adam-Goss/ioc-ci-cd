@@ -8,14 +8,16 @@
 **Target Deployment**: GitHub Actions (Docker-based action)
 
 ### Purpose
-Automate the ingestion, validation, enrichment, and deployment of Indicators of Compromise (IOCs) from security analysts. Replace manual, error-prone IOC triage with a reviewable, auditable, Git-based pipeline.
+Automate the ingestion, validation, enrichment, and threat hunting of Indicators of Compromise (IOCs) from security analysts. Replace manual, error-prone IOC triage with a reviewable, auditable, Git-based pipeline.
 
 ### Key Features
 - **Auto-detection** of IOC types (IP, domain, URL, hash)
 - **Multi-source enrichment** via VirusTotal, AbuseIPDB, OTX AlienVault
 - **PR-based review gate** with automated enrichment reports
-- **Automated deployment** to MISP and OpenCTI on merge
+- **Automated threat hunting** in Splunk and Elasticsearch on merge
+- **Modular architecture** — enrichment sources and hunting publishers are selectable
 - **Configurable confidence thresholds** with override capability
+- **Age-based IOC selection** — hunts IOCs within a configurable time window
 
 ---
 
@@ -50,28 +52,31 @@ Automate the ingestion, validation, enrichment, and deployment of Indicators of 
 #### FR-4: Deployment Workflow (Two-Phase)
 - **FR-4.1**: Trigger on push to main when `iocs/indicators.txt` changes
 - **FR-4.2**: Diff against previous commit to find new IOCs
-- **FR-4.3**: Phase 1 (Inventory): Enrich IOCs, append ALL valid IOCs to master CSV with `status=pending` and confidence level
-- **FR-4.4**: Phase 2 (Deploy): Read pending IOCs from master CSV, filter independently per publisher by configurable confidence level
-- **FR-4.5**: Create MISP event with IOCs meeting MISP confidence level (default: medium+)
-- **FR-4.6**: Create OpenCTI observables for IOCs meeting OpenCTI confidence level (default: high only)
-- **FR-4.7**: Use GitHub Environment for deployment gate
-- **FR-4.8**: Publisher failures are non-fatal — pipeline continues, warnings embedded in commit message
-- **FR-4.9**: Clear `indicators.txt` and commit updated master CSV after processing
+- **FR-4.3**: Phase 1 (Inventory): Enrich IOCs, append ALL valid IOCs to master CSV with empty `last_hunted_date` and confidence level
+- **FR-4.4**: Phase 2 (Hunt): Read IOCs within the configured age window from master CSV, filter independently per publisher by configurable confidence level
+- **FR-4.5**: Hunt for IOCs in Splunk using SPL queries scoped to the configured time range
+- **FR-4.6**: Hunt for IOCs in Elasticsearch using ECS-mapped queries scoped to the configured time range
+- **FR-4.7**: Log hunt results (hit counts, time range) in workflow run logs
+- **FR-4.8**: Update `last_hunted_date` in master CSV after each successful hunt
+- **FR-4.9**: Use GitHub Environment for deployment gate
+- **FR-4.10**: Publisher failures are non-fatal — pipeline continues, warnings embedded in commit message
+- **FR-4.11**: Clear `indicators.txt` and commit updated master CSV after processing
 
-#### FR-5: MISP Integration
-- **FR-5.1**: Create one MISP event per pipeline run
-- **FR-5.2**: Title event with commit SHA and timestamp
-- **FR-5.3**: Add each IOC as an attribute with correct type
-- **FR-5.4**: Tag attributes with confidence scores
-- **FR-5.5**: Apply TLP tags to event
-- **FR-5.6**: Optionally auto-publish event
+#### FR-5: Splunk Integration
+- **FR-5.1**: Submit async search jobs via Splunk REST API (no SDK dependency)
+- **FR-5.2**: Poll job status until `DONE` (with timeout)
+- **FR-5.3**: Read up to 1 result page per job to capture hit count and sample events
+- **FR-5.4**: SPL query templates per IOC type (IP: `src_ip`/`dest_ip`, domain: `query`/`url`, URL: `url`, hash: `file_hash`/`sha256`)
+- **FR-5.5**: Time-scope queries using `earliest_time=-{max_ioc_age_days}d`
+- **FR-5.6**: Report `HuntResult` with hit count, earliest/latest hit timestamps, and query used
 
-#### FR-6: OpenCTI Integration
-- **FR-6.1**: Create STIX Cyber Observable (SCO) per IOC
-- **FR-6.2**: Promote observables to indicators
-- **FR-6.3**: Set `x_opencti_score` to confidence value
-- **FR-6.4**: Apply labels from enrichment tags
-- **FR-6.5**: Handle per-IOC errors gracefully
+#### FR-6: Elasticsearch Integration
+- **FR-6.1**: Submit `_search` queries via Elasticsearch REST API (no SDK dependency)
+- **FR-6.2**: Use ECS field mappings per IOC type (IP: `source.ip`/`destination.ip`, domain: `dns.question.name`/`url.domain`, URL: `url.full`, hash: `file.hash.*`)
+- **FR-6.3**: Time-scope queries using `@timestamp >= now-{max_ioc_age_days}d`
+- **FR-6.4**: Support configurable index pattern (default: `*`)
+- **FR-6.5**: Report `HuntResult` with hit count and sample events
+- **FR-6.6**: Configurable TLS verification via `ELASTIC_VERIFY_SSL`
 
 ### Non-Functional Requirements
 
@@ -88,7 +93,7 @@ Automate the ingestion, validation, enrichment, and deployment of Indicators of 
 #### NFR-3: Security
 - **NFR-3.1**: API keys stored as GitHub secrets
 - **NFR-3.2**: No secrets logged or exposed in outputs
-- **NFR-3.3**: TLS verification configurable for MISP
+- **NFR-3.3**: TLS verification configurable for Elasticsearch (`ELASTIC_VERIFY_SSL`)
 - **NFR-3.4**: Input validation before any external API calls
 
 #### NFR-4: Usability
@@ -141,9 +146,9 @@ Automate the ingestion, validation, enrichment, and deployment of Indicators of 
 │  │         │                                               │  │
 │  │    ┌────┴────┐                                         │  │
 │  │    ▼         ▼                                         │  │
-│  │ ┌──────┐  ┌────────┐                                  │  │
-│  │ │ MISP │  │OpenCTI │  (Publishers - deploy only)      │  │
-│  │ └──────┘  └────────┘                                  │  │
+│  │ ┌────────┐  ┌─────────┐                               │  │
+│  │ │ Splunk │  │ Elastic │  (Hunters - deploy only)      │  │
+│  │ └────────┘  └─────────┘                               │  │
 │  └─────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -164,12 +169,12 @@ Automate the ingestion, validation, enrichment, and deployment of Indicators of 
 #### Deployment Workflow (Two-Phase)
 1. PR merged → `deploy.yml` triggered
 2. Git diff extracts newly merged lines
-3. **Phase 1 — Inventory**: Parse, enrich, append all valid IOCs to master CSV as `pending`
-4. **Phase 2 — Deploy**: Read pending IOCs from CSV, filter per-publisher by confidence level
-5. MISP publisher creates event for IOCs meeting minimum level (default: medium+)
-6. OpenCTI publisher creates observables for IOCs meeting minimum level (default: high only)
-7. Publisher failures are caught — pipeline continues with remaining publishers
-8. Master CSV updated: `status=deployed`, `deployed_to` records which platforms succeeded
+3. **Phase 1 — Inventory**: Parse, enrich, append all valid IOCs to master CSV with empty `last_hunted_date`
+4. **Phase 2 — Hunt**: Read IOCs added within `MAX_IOC_AGE_DAYS` window, filter per-publisher by confidence level
+5. Splunk hunter submits SPL search jobs for IOCs meeting minimum level (default: low+)
+6. Elastic hunter submits `_search` queries for IOCs meeting minimum level (default: low+)
+7. Hunt results logged to workflow run (hit counts, time ranges per IOC per platform)
+8. Master CSV updated: `last_hunted_date` recorded for successfully hunted IOCs
 9. `indicators.txt` cleared, changes committed with `[skip ci]`
 10. If any publisher failed, warning embedded in commit message
 
@@ -210,6 +215,17 @@ ValidationReport:
   - enrichment_results: list[EnrichmentResult]
   - threshold: float
   - override: bool
+
+HuntResult:
+  - ioc: IOC
+  - platform: str (splunk, elastic)
+  - hits_found: int
+  - earliest_hit: str | None
+  - latest_hit: str | None
+  - sample_events: list[dict]
+  - query_used: str
+  - error: str | None
+  - success: bool
 ```
 
 ### API Specifications
@@ -236,22 +252,39 @@ ValidationReport:
 
 All configuration via environment variables:
 
+**Enrichment Sources**
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `VT_API_KEY` | Yes | - | VirusTotal API key |
-| `ABUSEIPDB_API_KEY` | Yes | - | AbuseIPDB API key |
-| `OTX_API_KEY` | Yes | - | OTX API key |
-| `MISP_URL` | Deploy only | - | MISP instance URL |
-| `MISP_API_KEY` | Deploy only | - | MISP auth key |
-| `OPENCTI_URL` | Deploy only | - | OpenCTI URL |
-| `OPENCTI_TOKEN` | Deploy only | - | OpenCTI token |
-| `CONFIDENCE_THRESHOLD` | No | 70 | Min confidence for PR validation (0-100) |
-| `MISP_MIN_CONFIDENCE_LEVEL` | No | medium | Min confidence level for MISP deployment (low/medium/high) |
-| `OPENCTI_MIN_CONFIDENCE_LEVEL` | No | high | Min confidence level for OpenCTI deployment (low/medium/high) |
-| `MISP_VERIFY_SSL` | No | true | Verify MISP TLS cert |
+| `VT_API_KEY` | If VT enabled | - | VirusTotal API key |
+| `ABUSEIPDB_API_KEY` | If AbuseIPDB enabled | - | AbuseIPDB API key |
+| `OTX_API_KEY` | If OTX enabled | - | OTX API key |
+| `ENRICHMENT_SOURCES` | No | `virustotal,abuseipdb,otx` | Comma-separated list of enabled enrichment sources |
 | `WEIGHT_VT` | No | 0.45 | VirusTotal weight |
 | `WEIGHT_ABUSEIPDB` | No | 0.25 | AbuseIPDB weight |
 | `WEIGHT_OTX` | No | 0.30 | OTX weight |
+
+**Hunting Publishers**
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PUBLISHERS` | No | `splunk,elastic` | Comma-separated list of enabled hunting publishers |
+| `MAX_IOC_AGE_DAYS` | No | 30 | Maximum IOC age (days) for hunting |
+| `SPLUNK_URL` | If Splunk enabled | - | Splunk REST API base URL |
+| `SPLUNK_TOKEN` | If Splunk enabled | - | Splunk auth token |
+| `SPLUNK_INDEX` | No | `main` | Splunk index to search |
+| `SPLUNK_MIN_CONFIDENCE_LEVEL` | No | `low` | Min confidence level for Splunk hunting |
+| `ELASTIC_URL` | If Elastic enabled | - | Elasticsearch base URL |
+| `ELASTIC_API_KEY` | If Elastic enabled | - | Elasticsearch API key |
+| `ELASTIC_INDEX` | No | `*` | Elasticsearch index pattern |
+| `ELASTIC_VERIFY_SSL` | No | true | Verify Elasticsearch TLS cert |
+| `ELASTIC_MIN_CONFIDENCE_LEVEL` | No | `low` | Min confidence level for Elastic hunting |
+
+**Validation**
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `CONFIDENCE_THRESHOLD` | No | 70 | Min confidence for PR validation (0-100) |
 
 ---
 
@@ -272,9 +305,9 @@ All configuration via environment variables:
 - [x] Confidence aggregator (`enrichment/aggregator.py`)
 
 ### Phase 3: Publishers ✅
-- [x] Base publisher (`publishers/base.py`)
-- [x] MISP publisher (`publishers/misp.py`)
-- [x] OpenCTI publisher (`publishers/opencti.py`)
+- [x] Base hunt publisher (`publishers/base.py`) — `HuntPublisher` ABC
+- [x] Splunk hunter (`publishers/splunk.py`) — REST API, SPL queries
+- [x] Elastic hunter (`publishers/elastic.py`) — REST API, ECS queries
 
 ### Phase 4: Reporting ✅
 - [x] PR comment formatter (`reporting/pr_comment.py`)
@@ -291,13 +324,13 @@ All configuration via environment variables:
 ### Phase 7: Testing ✅
 - [x] Parser tests (`tests/test_parser.py`) - 18 tests
 - [x] Enrichment tests (VT, AIB, OTX, aggregator) - 52 tests
-- [x] Publisher tests (MISP, OpenCTI) - 30 tests
-- [x] CLI tests - 21 tests
+- [x] Hunter tests (Splunk, Elastic) - 37 tests
+- [x] CLI tests - 35 tests
 - [x] Reporting tests - 13 tests
 - [x] Rate limiter tests - 10 tests
-- [x] Model tests - 8 tests
+- [x] Model tests - 11 tests
 - [x] Test fixtures (sample IOCs, mock responses)
-- [x] **160 tests total, 96% coverage**
+- [x] **189 tests total, 95% coverage**
 
 ### Phase 8: Documentation ✅
 - [x] README.md (user guide)
@@ -329,7 +362,7 @@ All configuration via environment variables:
 ### Test Coverage Targets
 - **Parser**: 95%+ (critical for correctness)
 - **Enrichment**: 90%+ (API mocking)
-- **Publishers**: 85%+ (MISP/OpenCTI mocking)
+- **Hunters**: 85%+ (Splunk/Elastic REST mocking via aioresponses)
 - **Aggregator**: 95%+ (scoring logic critical)
 - **Overall**: 85%+
 
@@ -347,19 +380,22 @@ All configuration via environment variables:
 
 ### MVP (v0.1.0) ✅
 - [x] Parse and validate 6 IOC types (IP, domain, URL, MD5, SHA1, SHA256)
-- [x] Enrich against VT, AbuseIPDB, OTX
+- [x] Enrich against VT, AbuseIPDB, OTX (modular, selectable)
 - [x] Post PR comments with enrichment results
-- [x] Deploy to MISP and OpenCTI on merge
-- [x] 85%+ test coverage (achieved: 96%)
+- [x] Hunt for IOCs in Splunk and Elasticsearch on merge
+- [x] Age-based IOC selection (configurable window, default 30 days)
+- [x] 85%+ test coverage (achieved: 95%)
 - [x] Full documentation (README, CLAUDE.md, PROJECT_SPEC, WORKFLOW, CHANGELOG)
 
 ### Future Enhancements (v0.2.0+)
 - [ ] IPv6 support
 - [ ] Additional TI sources (Shodan, GreyNoise)
+- [ ] Additional hunters (CrowdStrike, Microsoft Sentinel, Velociraptor)
 - [ ] Scheduled re-validation of existing IOCs
 - [ ] STIX 2.1 input format
 - [ ] Batch size limits
 - [ ] Incremental enrichment (caching)
+- [ ] Slack/email notifications on hunt results
 
 ---
 
@@ -369,9 +405,10 @@ All configuration via environment variables:
 |------|------------|--------|------------|
 | TI source rate limits hit | High | Medium | Token bucket limiter, daily budget tracking |
 | Malformed IOC breaks parser | Medium | Low | Comprehensive validation, catch-all error handling |
-| MISP/OpenCTI auth failure | Medium | High | Fail fast, clear error messages, retry logic |
+| Splunk/Elastic auth failure | Medium | High | Fail fast, clear error messages, non-fatal pipeline |
 | GitHub Actions timeout | Low | Medium | Batch size limits (future), concurrent enrichment |
 | Stale PR enrichment data | Medium | Low | Re-enrich on deploy workflow |
+| No IOCs in hunt window | Low | Low | Age window configurable, log warning if no IOCs selected |
 
 ---
 

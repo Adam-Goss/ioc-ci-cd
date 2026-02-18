@@ -1,5 +1,5 @@
 name: 'IOC CI/CD Pipeline'
-description: 'Validate, enrich, and publish Indicators of Compromise'
+description: 'Validate, enrich, and hunt for Indicators of Compromise'
 author: 'Security Team'
 
 inputs:
@@ -18,6 +18,18 @@ inputs:
     description: 'Set to true to allow below-threshold IOCs (validate only)'
     required: false
     default: 'false'
+  enrichment_sources:
+    description: 'Comma-separated enrichment sources to use (virustotal,abuseipdb,otx)'
+    required: false
+    default: 'virustotal,abuseipdb,otx'
+  publishers:
+    description: 'Comma-separated hunting publishers to use (splunk,elastic)'
+    required: false
+    default: 'splunk,elastic'
+  max_ioc_age_days:
+    description: 'Maximum IOC age in days for hunting (publish command only)'
+    required: false
+    default: '30'
 
 outputs:
   has_malformed:
@@ -35,6 +47,10 @@ runs:
     - ${{ inputs.ioc_file }}
     - --threshold=${{ inputs.confidence_threshold }}
     - --override=${{ inputs.override_threshold }}
+  env:
+    ENRICHMENT_SOURCES: ${{ inputs.enrichment_sources }}
+    PUBLISHERS: ${{ inputs.publishers }}
+    MAX_IOC_AGE_DAYS: ${{ inputs.max_ioc_age_days }}
 
 branding:
   icon: 'shield'
