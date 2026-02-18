@@ -55,6 +55,7 @@ jobs:
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
           OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
           ENRICHMENT_SOURCES: ${{ vars.ENRICHMENT_SOURCES || 'virustotal,abuseipdb,otx' }}
+          PUBLISHERS: " "
 
       - name: Commit enriched master inventory to PR branch
         if: steps.diff.outputs.count != '0'
