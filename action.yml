@@ -30,6 +30,10 @@ inputs:
     description: 'Maximum IOC age in days for hunting (publish command only)'
     required: false
     default: '30'
+  master_csv:
+    description: 'Path to master IOC inventory CSV file'
+    required: false
+    default: 'iocs/master-indicators.csv'
 
 outputs:
   has_malformed:
@@ -47,6 +51,7 @@ runs:
     - ${{ inputs.ioc_file }}
     - --threshold=${{ inputs.confidence_threshold }}
     - --override=${{ inputs.override_threshold }}
+    - --master-csv=${{ inputs.master_csv }}
   env:
     ENRICHMENT_SOURCES: ${{ inputs.enrichment_sources }}
     PUBLISHERS: ${{ inputs.publishers }}

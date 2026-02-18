@@ -39,17 +39,12 @@ jobs:
           echo "No new IOCs to deploy."
           exit 0
 
-      - name: Inventory new IOCs (Phase 1 — enrich and record)
+      - name: Inventory new IOCs (Phase 1 — record)
         if: steps.diff.outputs.count != '0'
         uses: ./
         with:
           command: inventory
           ioc_file: new_iocs.txt
-          enrichment_sources: ${{ vars.ENRICHMENT_SOURCES || 'virustotal,abuseipdb,otx' }}
-        env:
-          VT_API_KEY: ${{ secrets.VT_API_KEY }}
-          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
-          OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
 
       - name: Hunt for IOCs (Phase 2 — search security platforms)
         if: steps.diff.outputs.count != '0'
@@ -57,12 +52,9 @@ jobs:
         with:
           command: publish
           publishers: ${{ vars.PUBLISHERS || 'splunk,elastic' }}
-          enrichment_sources: ${{ vars.ENRICHMENT_SOURCES || 'virustotal,abuseipdb,otx' }}
           max_ioc_age_days: ${{ vars.MAX_IOC_AGE_DAYS || '30' }}
         env:
-          VT_API_KEY: ${{ secrets.VT_API_KEY }}
-          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
-          OTX_API_KEY: ${{ secrets.OTX_API_KEY }}
+          ENRICHMENT_SOURCES: " "
           SPLUNK_URL: ${{ secrets.SPLUNK_URL }}
           SPLUNK_TOKEN: ${{ secrets.SPLUNK_TOKEN }}
           SPLUNK_INDEX: ${{ vars.SPLUNK_INDEX || 'main' }}

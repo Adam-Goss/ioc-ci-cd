@@ -68,6 +68,9 @@ async def validate_command(args: argparse.Namespace) -> int:
     """
     Execute the validate command.
 
+    Enriches IOCs, posts a PR comment report, and writes enriched results
+    to the master CSV so the deploy workflow can hunt without re-enriching.
+
     Returns:
         Exit code (0 = success, 2 = file not found).
     """
@@ -91,6 +94,12 @@ async def validate_command(args: argparse.Namespace) -> int:
         enrichment_results = await enrich_all(valid_iocs, config)
     else:
         enrichment_results = []
+
+    # Write enriched results to master CSV so deploy workflow can hunt without
+    # re-calling enrichment APIs. Deduplication prevents double-entries on re-runs.
+    if enrichment_results:
+        master_csv = getattr(args, "master_csv", None) or "iocs/master-indicators.csv"
+        append_to_master_inventory(enrichment_results, master_csv)
 
     report = build_validation_report(
         valid_iocs,
@@ -316,14 +325,17 @@ async def inventory_command(args: argparse.Namespace) -> int:
     """
     Execute the inventory command (Phase 1 of deploy).
 
-    Parses, enriches, and appends all valid IOCs to the master CSV.
+    Parses IOCs and records any not already in the master CSV. IOCs enriched
+    during PR validation are already present (skipped via deduplication).
+    IOCs from a direct push to main (no PR) are recorded with a fallback
+    confidence score of 0.0 / level "low".
+
+    No enrichment API keys are used here.
 
     Returns:
         Exit code (0 = success, 2 = file not found).
     """
     logger.info(f"Building inventory from {args.ioc_file}")
-
-    config = load_config()
 
     try:
         valid_iocs, malformed_lines, duplicates_removed = parse_ioc_file(args.ioc_file)
@@ -346,12 +358,18 @@ async def inventory_command(args: argparse.Namespace) -> int:
         logger.info("No IOCs to inventory")
         return 0
 
-    enrichment_results = await enrich_all(valid_iocs, config)
+    # Build fallback EnrichmentResults (score=0, no source data).
+    # append_to_master_inventory deduplicates by (ioc_type, ioc_value) so IOCs
+    # already written by the validate step (with real scores) are skipped.
+    fallback_results = [
+        EnrichmentResult(ioc=ioc, scores=[], confidence=0.0)
+        for ioc in valid_iocs
+    ]
 
     master_csv = args.master_csv or "iocs/master-indicators.csv"
-    append_to_master_inventory(enrichment_results, master_csv)
+    append_to_master_inventory(fallback_results, master_csv)
 
-    logger.info(f"Inventory complete: {len(enrichment_results)} IOCs processed")
+    logger.info(f"Inventory complete: {len(valid_iocs)} IOCs checked")
     return 0
 
 

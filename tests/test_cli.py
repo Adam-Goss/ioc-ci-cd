@@ -400,6 +400,7 @@ class TestValidateCommand:
             ioc_file=valid_ioc_file,
             threshold=70.0,
             override=False,
+            master_csv=str(tmp_path / "master.csv"),
         )
 
         with patch("src.cli.load_config") as mock_config, \
@@ -419,12 +420,75 @@ class TestValidateCommand:
             mock_outputs.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_validate_writes_to_master_csv(self, tmp_path, valid_ioc_file):
+        """Test that validate writes enriched IOCs to master CSV."""
+        master_csv = tmp_path / "master.csv"
+
+        args = argparse.Namespace(
+            ioc_file=valid_ioc_file,
+            threshold=70.0,
+            override=False,
+            master_csv=str(master_csv),
+        )
+
+        result = _make_result(IOCType.IP, "192.168.1.1", 85.0)
+
+        with patch("src.cli.load_config") as mock_config, \
+             patch("src.cli.enrich_all") as mock_enrich, \
+             patch("src.cli.format_report"), \
+             patch("src.cli.write_report"), \
+             patch("src.cli.set_github_outputs"):
+
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
+            mock_enrich.return_value = [result]
+
+            exit_code = await validate_command(args)
+
+        assert exit_code == 0
+        assert master_csv.exists()
+        rows = _read_master_csv(master_csv)
+        assert len(rows) == 1
+        assert rows[0]["ioc_value"] == "192.168.1.1"
+        assert rows[0]["confidence_score"] == "85.00"
+        assert rows[0]["confidence_level"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_validate_no_csv_write_when_no_valid_iocs(self, tmp_path):
+        """Test that master CSV is not written when there are no valid IOCs."""
+        ioc_file = tmp_path / "bad_iocs.txt"
+        ioc_file.write_text("999.999.999.999\nnot-an-ioc\n")
+        master_csv = tmp_path / "master.csv"
+
+        args = argparse.Namespace(
+            ioc_file=str(ioc_file),
+            threshold=70.0,
+            override=False,
+            master_csv=str(master_csv),
+        )
+
+        with patch("src.cli.load_config") as mock_config, \
+             patch("src.cli.enrich_all") as mock_enrich, \
+             patch("src.cli.format_report"), \
+             patch("src.cli.write_report"), \
+             patch("src.cli.set_github_outputs"):
+
+            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
+            mock_enrich.return_value = []
+
+            exit_code = await validate_command(args)
+
+        assert exit_code == 0
+        # CSV should not be created when there are no enrichment results
+        assert not master_csv.exists()
+
+    @pytest.mark.asyncio
     async def test_validate_file_not_found(self):
         """Test validation with non-existent file."""
         args = argparse.Namespace(
             ioc_file="/nonexistent/file.txt",
             threshold=70.0,
             override=False,
+            master_csv="/tmp/master.csv",
         )
 
         with patch("src.cli.load_config"):
@@ -441,6 +505,7 @@ class TestValidateCommand:
             ioc_file=str(ioc_file),
             threshold=70.0,
             override=False,
+            master_csv=str(tmp_path / "master.csv"),
         )
 
         with patch("src.cli.load_config") as mock_config, \
@@ -466,6 +531,7 @@ class TestValidateCommand:
             ioc_file=str(ioc_file),
             threshold=70.0,
             override=False,
+            master_csv=str(tmp_path / "master.csv"),
         )
 
         with patch("src.cli.load_config") as mock_config, \
@@ -486,34 +552,59 @@ class TestValidateCommand:
 # ---------------------------------------------------------------------------
 
 class TestInventoryCommand:
-    """Tests for inventory command."""
+    """Tests for inventory command (no enrichment — records IOCs with fallback scores)."""
 
     @pytest.mark.asyncio
-    async def test_inventory_success(self, valid_ioc_file, tmp_path):
-        """Test successful inventory adds IOCs to CSV."""
+    async def test_inventory_success_fallback_scores(self, tmp_path):
+        """Test inventory writes IOCs with fallback score=0 when not pre-enriched."""
+        ioc_file = tmp_path / "iocs.txt"
+        ioc_file.write_text("192.168.1.1\n")
         master_csv = tmp_path / "master-indicators.csv"
 
         args = argparse.Namespace(
-            ioc_file=valid_ioc_file,
+            ioc_file=str(ioc_file),
             master_csv=str(master_csv),
         )
 
-        result = _make_result(IOCType.IP, "192.168.1.1", 85.0)
+        exit_code = await inventory_command(args)
 
-        with patch("src.cli.load_config") as mock_config, \
-             patch("src.cli.enrich_all") as mock_enrich:
+        assert exit_code == 0
+        assert master_csv.exists()
+        rows = _read_master_csv(master_csv)
+        assert len(rows) == 1
+        assert rows[0]["ioc_value"] == "192.168.1.1"
+        assert rows[0]["confidence_score"] == "0.00"
+        assert rows[0]["confidence_level"] == "low"
 
-            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
-            mock_enrich.return_value = [result]
+    @pytest.mark.asyncio
+    async def test_inventory_skips_pre_enriched_iocs(self, tmp_path):
+        """Test inventory skips IOCs already in master CSV (written by validate step)."""
+        master_csv = tmp_path / "master.csv"
+        _write_master_csv(master_csv, [
+            ["ip", "192.168.1.1", "85.00", "high", _recent_date(1), "", "aaa"],
+        ])
 
-            exit_code = await inventory_command(args)
+        ioc_file = tmp_path / "iocs.txt"
+        # First IOC is already in CSV; second is new
+        ioc_file.write_text("192.168.1.1\n10.0.0.1\n")
 
-            assert exit_code == 0
-            assert master_csv.exists()
+        args = argparse.Namespace(
+            ioc_file=str(ioc_file),
+            master_csv=str(master_csv),
+        )
 
-            rows = _read_master_csv(master_csv)
-            assert len(rows) == 1
-            assert rows[0]["ioc_value"] == "192.168.1.1"
+        exit_code = await inventory_command(args)
+
+        assert exit_code == 0
+        rows = _read_master_csv(master_csv)
+        # Two rows: original enriched + new fallback
+        assert len(rows) == 2
+        # Original pre-enriched IOC retains its real score
+        assert rows[0]["ioc_value"] == "192.168.1.1"
+        assert rows[0]["confidence_score"] == "85.00"
+        # New direct-push IOC gets fallback score
+        assert rows[1]["ioc_value"] == "10.0.0.1"
+        assert rows[1]["confidence_score"] == "0.00"
 
     @pytest.mark.asyncio
     async def test_inventory_file_not_found(self):
@@ -523,9 +614,8 @@ class TestInventoryCommand:
             master_csv="master.csv",
         )
 
-        with patch("src.cli.load_config"):
-            exit_code = await inventory_command(args)
-            assert exit_code == 2
+        exit_code = await inventory_command(args)
+        assert exit_code == 2
 
     @pytest.mark.asyncio
     async def test_inventory_skips_malformed(self, tmp_path):
@@ -538,10 +628,8 @@ class TestInventoryCommand:
             master_csv=str(tmp_path / "master.csv"),
         )
 
-        with patch("src.cli.load_config") as mock_config:
-            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
-            exit_code = await inventory_command(args)
-            assert exit_code == 0
+        exit_code = await inventory_command(args)
+        assert exit_code == 0
 
     @pytest.mark.asyncio
     async def test_inventory_processes_valid_and_skips_malformed(self, tmp_path):
@@ -555,20 +643,14 @@ class TestInventoryCommand:
             master_csv=str(master_csv),
         )
 
-        result = _make_result(IOCType.IP, "192.168.1.1", 85.0)
+        exit_code = await inventory_command(args)
 
-        with patch("src.cli.load_config") as mock_config, \
-             patch("src.cli.enrich_all") as mock_enrich:
-
-            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
-            mock_enrich.return_value = [result]
-
-            exit_code = await inventory_command(args)
-
-            assert exit_code == 0
-            rows = _read_master_csv(master_csv)
-            assert len(rows) == 1
-            assert rows[0]["ioc_value"] == "192.168.1.1"
+        assert exit_code == 0
+        rows = _read_master_csv(master_csv)
+        # Only the valid IOC is recorded
+        assert len(rows) == 1
+        assert rows[0]["ioc_value"] == "192.168.1.1"
+        assert rows[0]["confidence_score"] == "0.00"
 
     @pytest.mark.asyncio
     async def test_inventory_empty_file(self, tmp_path):
@@ -581,10 +663,25 @@ class TestInventoryCommand:
             master_csv=str(tmp_path / "master.csv"),
         )
 
-        with patch("src.cli.load_config") as mock_config:
-            mock_config.return_value = MagicMock(enrichment_sources=["virustotal"])
+        exit_code = await inventory_command(args)
+        assert exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_inventory_does_not_use_enrichment_apis(self, tmp_path):
+        """Test that inventory command never calls enrich_all."""
+        ioc_file = tmp_path / "iocs.txt"
+        ioc_file.write_text("192.168.1.1\n")
+
+        args = argparse.Namespace(
+            ioc_file=str(ioc_file),
+            master_csv=str(tmp_path / "master.csv"),
+        )
+
+        with patch("src.cli.enrich_all") as mock_enrich:
             exit_code = await inventory_command(args)
-            assert exit_code == 0
+
+        assert exit_code == 0
+        mock_enrich.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

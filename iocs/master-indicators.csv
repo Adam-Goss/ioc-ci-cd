@@ -1,2 +1,1 @@
 ioc_type,ioc_value,confidence_score,confidence_level,status,deployed_to,added_date,commit_sha
-url,http://self-dns.it.com/dns-query,12.13,low,pending,N/A,2026-02-17 20:42:57,32a04912
