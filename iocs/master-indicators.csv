@@ -1,1 +1,3 @@
 ioc_type,ioc_value,confidence_score,confidence_level,status,deployed_to,added_date,commit_sha
+hash_sha256,9f2cfc65b480695aa2fd847db901e6b1135b5ed982d9942c61b629243d6830dd,0.00,low,2026-02-18 12:57:04,,f8f584d6
+hash_sha256,574a17028b28fdf860e23754d16ede622e4e27bac11d33dbf5c39db501dfccdc,0.00,low,2026-02-18 12:57:04,,f8f584d6
